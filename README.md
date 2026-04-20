@@ -1,81 +1,63 @@
 # Infos
 
-Admin portal app with main admin (Zeus), sub-admin accounts, and tabs for Announcements, Notes, Backend, Games, and Id & Pass credentials.
+Admin portal app with main admin (Zeus), sub-admin accounts, and tabs for Notice, Backend, Games, and Id & Pass credentials.
+
+Backed by **Supabase** — all data syncs across devices in real-time.
 
 ## Features
 
-- **Unified login** — one form, auto-detects Zeus vs sub-admin
+- **Unified login** — auto-detects Zeus vs sub-admin
 - **Default Zeus credentials**: `Zeus` / `Hello@123` (change in Settings after first login)
 - **Multi-account sign-in** — stay logged into several accounts, switch via the avatar dropdown
-- **3-second app-open splash** + **2-second login splash**
-- **Assignments** — every entry (Backend / Games / Id & Pass / Notes / Announcements) can be assigned to specific sub-admins or toggled to "All sub-admins"
-- **Short name field** on Backend, Games, and Id & Pass
+- **Dark mode** — auto-match system, or manually toggle light/dark from the avatar menu
+- **Search bar** on every tab — filter instantly by name, link, or description
+- **Notice tab** — post announcements with title, message, and optional link
+- **Assignments** — assign entries to specific sub-admins or toggle "All sub-admins"
+- **Bulk manage access** — per sub-admin, check/uncheck which entries they can see from one modal
 - **Description / note field** on every entry
-- **Drag to reorder** — Zeus drags `⋮⋮` handles; sub-admins see items in that order
+- **Drag OR arrow buttons (▲▼) to reorder** — works great on mobile
+- **One-click copy** on every link, username, and password
+- **Confirmation dialog on delete** — no more accidental data loss
+- **Created / last-updated timestamps** — "2h ago" with full date on hover
+- **New entries append to bottom** — preserves existing order
 - **Reveal/hide** for Id & Pass passwords
-- **Custom sub-admins** — Zeus creates their username + password
-- **Settings** — Zeus can change their own username/password
-- **PWA ready** — manifest + all icon sizes bundled
+- **Import / Export** — full JSON backup + restore from Settings tab
+- **Real-time sync** — changes appear instantly on every device
 
 ## Tech Stack
 
-- Next.js 14 (App Router)
-- React 18
-- TypeScript
-- `localStorage` for persistence (no backend needed)
+- Next.js 14 (App Router) + React 18 + TypeScript
+- Supabase (Postgres + realtime)
 
-## Run Locally
+## Local development
 
-```bash
-npm install
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
+1. Copy `.env.example` to `.env.local` and fill in your Supabase URL and publishable key.
+2. `npm install && npm run dev`
+3. Open http://localhost:3000
 
 ## Deploy to Vercel
 
-### Option 1 — via Vercel CLI
+Set these two environment variables in the Vercel project settings:
 
-```bash
-npm install -g vercel
-vercel
-```
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-Follow prompts; defaults are fine. Hit "Production" deploy when asked.
+Then push to GitHub, import in Vercel, deploy.
 
-### Option 2 — via GitHub + Vercel dashboard
+## Database schema
 
-1. Push this folder to a new GitHub repo:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   git branch -M main
-   git remote add origin https://github.com/YOUR_USERNAME/infos.git
-   git push -u origin main
-   ```
-2. Go to [vercel.com/new](https://vercel.com/new) and import the repo.
-3. Framework preset: **Next.js** (auto-detected).
-4. Click **Deploy**. Done.
+First-time setup: run the `schema.sql` and `migration.sql` (the latter only if you already ran the original schema).
 
-### Option 3 — drag and drop
+Tables:
+- `zeus_creds` — admin credentials (1 row)
+- `sub_admins` — sub-admin accounts
+- `backend_entries`, `game_entries`, `idpass_entries` — content tables
+- `notices` — notice board
 
-On [vercel.com/new](https://vercel.com/new), scroll to **"Deploy without Git"** and drag this project folder in.
+All tables have `created_at`, `sort_order`, and `updated_at` columns. RLS is enabled with public-access policies; app login logic controls visibility per role.
 
-## First-time setup after deploy
+## Security notes
 
-1. Open your Vercel URL.
-2. After the splash, log in with `Zeus` / `Hello@123`.
-3. Go to **Settings** → change the Zeus password immediately.
-4. Go to **Sub-admins** → create sub-admin accounts.
-5. Start creating Announcements / Notes / Backend / Games / Id & Pass entries.
+Passwords are stored as plain text in Supabase for simplicity. For sensitive production use, add server-side password hashing (e.g. Supabase Edge Functions + bcrypt).
 
-## Notes
-
-- **Storage is per-browser**: the app uses `localStorage`. Data is stored in the user's browser, not on a server. Different devices / browsers see different data. If you need real multi-device sync, wire in a backend (Vercel KV, Supabase, Firebase etc.) and replace `lib/storage.ts` with your API calls.
-- **Passwords are stored in plain text** inside localStorage. This is fine for personal/internal use but not for production-grade security.
-
-## License
-
-Private / internal use.
+The `anon` / `publishable` key is safe to ship in frontend code. Never commit the `service_role` key.

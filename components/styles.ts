@@ -19,7 +19,7 @@ export const C = {
 
 export const S: Record<string, any> = {
   shell: { maxWidth: '720px', margin: '0 auto', padding: '1.5rem 1rem' },
-  card: { background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '1.5rem', boxShadow: '0 1px 3px rgba(0,0,0,0.03)' },
+  card: { background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: '14px', padding: '1.5rem', boxShadow: 'var(--shadow-card)' },
   softCard: { background: C.softBg, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '1rem' },
   headerBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', paddingBottom: '1rem', borderBottom: `1px solid ${C.border}`, gap: '8px' },
   brand: { fontSize: '20px', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.2 },

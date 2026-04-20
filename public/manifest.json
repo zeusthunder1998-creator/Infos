@@ -1,7 +1,7 @@
 {
   "name": "Infos",
   "short_name": "Infos",
-  "description": "Admin portal for managing announcements, notes, games, and credentials",
+  "description": "Admin portal for managing notices, games, and credentials",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
