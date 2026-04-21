@@ -7,7 +7,8 @@ import {
   isVisibleToSub, isAssignedAll, friendlyError,
   loadSession, saveSession,
   loadZeus, saveZeus,
-  loadSubs, addSub, deleteSub, updateSub,
+  loadSubs, loadSubById, findSubByCredentials, addSub, deleteSub, updateSub,
+  deleteCoAdminWorkspace, countWorkspaceContents, workspaceIdForUser,
   loadBackend, loadGames, addGameEntry, updateGameEntry, deleteGameEntry, bulkDeleteGameEntries, reorderGames, updateGameAssignees,
   loadIdPass, addIdPass, updateIdPass, deleteIdPass, bulkDeleteIdPass, reorderIdPass, updateIdPassAssignees,
   loadNotices, addNotice, updateNotice, deleteNotice, bulkDeleteNotices, reorderNotices, updateNoticeRecipients,
@@ -26,16 +27,20 @@ const isZeus = (role: string) => role === 'zeus';
 
 // ---------------- Splash (tap anywhere to skip for instant feel) ----------------
 function Splash({ ms, onDone, subtitle, small }: any) {
-  const [done, setDone] = useState(false);
+  // Use a ref to guarantee onDone fires EXACTLY once, even if click + timer race.
+  const firedRef = useRef(false);
+  const fire = useCallback(() => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    onDone();
+  }, [onDone]);
   useEffect(() => {
-    if (done) return;
-    const t = setTimeout(() => { setDone(true); onDone(); }, ms);
+    const t = setTimeout(fire, ms);
     return () => clearTimeout(t);
-  }, [ms, onDone, done]);
-  const skip = () => { if (!done) { setDone(true); onDone(); } };
+  }, [ms, fire]);
   const size = small ? 110 : 140;
   return (
-    <div onClick={skip} style={{ minHeight: small ? '360px' : '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem 1rem', animation: 'infosFadeIn 0.4s ease-out', cursor: 'pointer', userSelect: 'none' }}>
+    <div onClick={fire} style={{ minHeight: small ? '360px' : '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem 1rem', animation: 'infosFadeIn 0.4s ease-out', cursor: 'pointer', userSelect: 'none' }}>
       <div style={{ width: size, height: size, position: 'relative', animation: 'infosPulse 2s ease-in-out infinite' }}>
         <Image src="/logo.png" alt="Infos" fill style={{ objectFit: 'contain' }} priority />
       </div>
@@ -155,11 +160,18 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
       const zeus = await loadZeus();
       let matched: any = null;
       if (username.trim() === zeus.username && password === zeus.password) {
-        matched = { role: 'zeus', username: zeus.username };
+        // Zeus's workspace is always 'zeus'
+        matched = { role: 'zeus', username: zeus.username, ownerId: 'zeus' };
       } else {
-        const subs = await loadSubs();
-        const f = subs.find((s) => s.username === username.trim() && s.password === password);
-        if (f) matched = { role: f.role === 'co' ? 'co' : 'sub', username: f.username, id: f.id };
+        // Search ALL workspaces for a matching sub_admin (single global lookup)
+        const f = await findSubByCredentials(username.trim(), password);
+        if (f) {
+          // Co-admin: their workspace IS their own user id (they own a workspace)
+          // Sub-admin: their workspace is whichever admin created them (f.ownerId)
+          const role = f.role === 'co' ? 'co' : 'sub';
+          const userWorkspace = role === 'co' ? f.id : f.ownerId;
+          matched = { role, username: f.username, id: f.id, ownerId: userWorkspace };
+        }
       }
       if (!matched) return setError('Invalid username or password');
       setLoggingIn(matched);
@@ -529,7 +541,17 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
   // On failure we apply the INVERSE operation (rather than restoring a stale snapshot)
   // so concurrent edits made during the request aren't lost.
   const add = async (vals: any) => {
-    const newEntry = { ...vals, id: uid(), createdAt: Date.now(), sortOrder: nextSortOrder };
+    const newEntry = {
+      ...vals,
+      gameName: (vals.gameName || '').trim(),
+      shortName: (vals.shortName || '').trim(),
+      link: (vals.link || '').trim(),
+      description: (vals.description || '').trim(),
+      id: uid(),
+      createdAt: Date.now(),
+      sortOrder: nextSortOrder,
+      ownerId: user.ownerId || 'zeus',
+    };
     setEntries((prev: any[]) => [...prev, newEntry]);
     try { await addGameEntry(table, newEntry); }
     catch (e: any) { setEntries((prev: any[]) => prev.filter(x => x.id !== newEntry.id)); throw e; }
@@ -670,7 +692,18 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
   const subOnlyForFilter = useMemo(() => subs.filter((s: any) => s.role !== 'co'), [subs]);
 
   const add = async (vals: any) => {
-    const newEntry = { ...vals, id: uid(), createdAt: Date.now(), sortOrder: nextSortOrder };
+    const newEntry = {
+      ...vals,
+      game: (vals.game || '').trim(),
+      shortName: (vals.shortName || '').trim(),
+      username: (vals.username || '').trim(),
+      // password is intentionally NOT trimmed — leading/trailing spaces may be intentional
+      description: (vals.description || '').trim(),
+      id: uid(),
+      createdAt: Date.now(),
+      sortOrder: nextSortOrder,
+      ownerId: user.ownerId || 'zeus',
+    };
     setEntries((prev: any[]) => [...prev, newEntry]);
     try { await addIdPass(newEntry); }
     catch (e: any) { setEntries((prev: any[]) => prev.filter(x => x.id !== newEntry.id)); throw e; }
@@ -825,6 +858,7 @@ function NoticeTabInner({ user, subs, items, setItems, reload }: any) {
       id: uid(), title: vals.title.trim(), body: vals.body.trim(),
       link: (vals.link || '').trim(), recipients: vals.assignees,
       createdAt: Date.now(), sortOrder: nextSortOrder,
+      ownerId: user.ownerId || 'zeus',
     };
     setItems((prev: any[]) => [...prev, newItem]);
     try { await addNotice(newItem); }
@@ -963,14 +997,25 @@ function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, no
       if (subs.some((s: any) => s.username === username.trim())) return setError('That username is already taken');
       const finalRole = canSelectRole ? role : 'sub';
       setBusy(true);
-      const newSub = { id: uid(), username: username.trim(), password, role: finalRole, createdAt: Date.now(), sortOrder: nextSortOrder };
-      // Optimistic: add to local state immediately
+      // v19: ownerId determines which workspace this new admin lives in.
+      //   If creating a co-admin → they live in Zeus's workspace (owner_id='zeus')
+      //     and become workspace owners themselves (their workspace = their own id).
+      //   If creating a sub-admin → they live in the creator's workspace.
+      const ownerId = finalRole === 'co' ? 'zeus' : (user.ownerId || 'zeus');
+      const newSub = {
+        id: uid(),
+        username: username.trim(),
+        password,
+        role: finalRole,
+        createdAt: Date.now(),
+        sortOrder: nextSortOrder,
+        ownerId,
+      };
       setSubs((prev: any[]) => [...prev, newSub]);
       try {
         await addSub(newSub);
         setUsername(''); setPassword(''); setShowNewPass(false); setRole('sub');
       } catch (dbErr: any) {
-        // Revert on failure
         setSubs((prev: any[]) => prev.filter(s => s.id !== newSub.id));
         throw dbErr;
       }
@@ -982,15 +1027,57 @@ function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, no
       alert('Only Zeus can remove co-admins.');
       return;
     }
-    const label = s.role === 'co' ? 'co-admin' : 'sub-admin';
-    const ok = await confirm({ title: `Remove ${label} "${s.username}"?`, message: `They will no longer be able to sign in. Content they were assigned to will still exist.`, confirmLabel: 'Remove', danger: true });
+    // For sub-admins: simple delete with one confirm
+    if (s.role !== 'co') {
+      const ok = await confirm({
+        title: `Remove sub-admin "${s.username}"?`,
+        message: 'They will no longer be able to sign in. Content they were assigned to will still exist.',
+        confirmLabel: 'Remove',
+        danger: true,
+      });
+      if (!ok) return;
+      const deletedItem = s;
+      setSubs((prev: any[]) => prev.filter(x => x.id !== s.id));
+      try { await deleteSub(s.id); }
+      catch (err: any) {
+        setSubs((prev: any[]) => [...prev, deletedItem].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+        alert(friendlyError(err));
+      }
+      return;
+    }
+    // For CO-ADMINS: cascade delete with detailed confirm showing what will be wiped
+    let counts;
+    try {
+      counts = await countWorkspaceContents(s.id);
+    } catch (err: any) {
+      alert(friendlyError(err, 'Could not count this co-admin\u2019s data. Try again.'));
+      return;
+    }
+    const lines: string[] = [];
+    if (counts.subAdmins) lines.push(`\u2022 ${counts.subAdmins} sub-admin${counts.subAdmins === 1 ? '' : 's'}`);
+    if (counts.notices)   lines.push(`\u2022 ${counts.notices} notice${counts.notices === 1 ? '' : 's'}`);
+    if (counts.backend)   lines.push(`\u2022 ${counts.backend} backend entr${counts.backend === 1 ? 'y' : 'ies'}`);
+    if (counts.games)     lines.push(`\u2022 ${counts.games} game entr${counts.games === 1 ? 'y' : 'ies'}`);
+    if (counts.idpass)    lines.push(`\u2022 ${counts.idpass} credential${counts.idpass === 1 ? '' : 's'}`);
+    const detailMsg = lines.length === 0
+      ? `Their workspace is empty. Removing the co-admin will also delete the workspace itself. This cannot be undone.`
+      : `This will also PERMANENTLY DELETE everything in their workspace:\n\n${lines.join('\n')}\n\nThis cannot be undone.`;
+    const ok = await confirm({
+      title: `Remove co-admin "${s.username}" and their entire workspace?`,
+      message: detailMsg,
+      confirmLabel: `Delete co-admin + ${lines.length || 'workspace'}`,
+      danger: true,
+    });
     if (!ok) return;
+    // Optimistic: remove the co-admin immediately
     const deletedItem = s;
     setSubs((prev: any[]) => prev.filter(x => x.id !== s.id));
-    try { await deleteSub(s.id); }
-    catch (err: any) {
+    try {
+      await deleteCoAdminWorkspace(s.id);
+    } catch (err: any) {
+      // Restore on failure
       setSubs((prev: any[]) => [...prev, deletedItem].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
-      alert(friendlyError(err));
+      alert(friendlyError(err, 'Could not delete co-admin workspace. Some data may have been removed; try again or refresh.'));
     }
   };
 
@@ -1104,8 +1191,11 @@ function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, no
             style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'all' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'all' ? C.accent : C.cardBg, color: viewFilter === 'all' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'all' ? 600 : 500 }}>All ({subs.length})</button>
           <button onClick={() => setViewFilter('sub')} className="infos-pill"
             style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'sub' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'sub' ? C.accent : C.cardBg, color: viewFilter === 'sub' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'sub' ? 600 : 500 }}>Sub-admins ({subCount})</button>
-          <button onClick={() => setViewFilter('co')} className="infos-pill"
-            style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'co' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'co' ? C.accent : C.cardBg, color: viewFilter === 'co' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'co' ? 600 : 500 }}>Co-admins ({coCount})</button>
+          {/* v19: Co-admins pill is Zeus-only — co-admins never have co-admins of their own */}
+          {isZeusUser && (
+            <button onClick={() => setViewFilter('co')} className="infos-pill"
+              style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'co' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'co' ? C.accent : C.cardBg, color: viewFilter === 'co' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'co' ? 600 : 500 }}>Co-admins ({coCount})</button>
+          )}
         </div>
       )}
 
@@ -1217,12 +1307,16 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
   const doExportAll = async () => {
     setExporting(true);
     try {
-      const data = await exportAll();
+      // v19: export only the current workspace's data
+      const workspaceId = user.role === 'zeus' ? 'zeus' : (user.role === 'co' ? user.id : (user.ownerId || 'zeus'));
+      const data = await exportAll(workspaceId);
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `infos-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      // Filename includes workspace tag so multiple co-admin exports don't collide
+      const tag = workspaceId === 'zeus' ? 'zeus' : `co-${user.username}`;
+      a.download = `infos-backup-${tag}-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e: any) { alert(friendlyError(e)); }
@@ -1236,13 +1330,21 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      if (!data.version || data.version !== 1) {
+      // v19: accept v1 (legacy, single workspace) and v2 (multi-tenant) backups
+      if (!data.version || (data.version !== 1 && data.version !== 2)) {
         setImportStatus('Unsupported backup file format.');
         return;
       }
+      // Determine target workspace for the import:
+      //   - v1 backup → goes to current workspace (legacy assumed Zeus)
+      //   - v2 backup → goes to current workspace, regardless of original
+      const targetWorkspace = user.role === 'zeus' ? 'zeus' : (user.role === 'co' ? user.id : (user.ownerId || 'zeus'));
+      const versionNote = data.version === 1
+        ? 'This is a legacy v1 backup. All entries will go into your current workspace.'
+        : `This is a v${data.version} backup originally from workspace "${data.workspace || 'unknown'}". Entries will go into YOUR current workspace.`;
       const ok = await confirm({
         title: 'Import and merge data?',
-        message: `This will ADD entries from the backup. Existing entries with the same IDs will be overwritten. Zeus credentials will NOT be changed. Subs: ${data.sub_admins?.length || 0}, backend: ${data.backend_entries?.length || 0}, games: ${data.game_entries?.length || 0}, credentials: ${data.idpass_entries?.length || 0}, notices: ${data.notices?.length || 0}.`,
+        message: `${versionNote}\n\nThis ADDS entries from the backup. Existing entries with the same IDs will be overwritten. Zeus credentials will NOT be changed.\n\nSubs: ${data.sub_admins?.length || 0}, backend: ${data.backend_entries?.length || 0}, games: ${data.game_entries?.length || 0}, credentials: ${data.idpass_entries?.length || 0}, notices: ${data.notices?.length || 0}.`,
         confirmLabel: 'Import',
       });
       if (!ok) { setImportStatus(''); ev.target.value = ''; return; }
@@ -1251,25 +1353,30 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
         id: s.id, username: s.username, password: s.password,
         role: s.role || 'sub',
         created_at: s.createdAt, sort_order: s.sortOrder ?? 0,
+        owner_id: targetWorkspace,
       })));
       if (data.backend_entries?.length) await bulkInsert('backend_entries', data.backend_entries.map((e: any) => ({
         id: e.id, game_name: e.gameName, short_name: e.shortName, link: e.link,
         description: e.description || '', assignees: e.assignees || [],
         created_at: e.createdAt, sort_order: e.sortOrder ?? 0,
+        owner_id: targetWorkspace,
       })));
       if (data.game_entries?.length) await bulkInsert('game_entries', data.game_entries.map((e: any) => ({
         id: e.id, game_name: e.gameName, short_name: e.shortName, link: e.link,
         description: e.description || '', assignees: e.assignees || [],
         created_at: e.createdAt, sort_order: e.sortOrder ?? 0,
+        owner_id: targetWorkspace,
       })));
       if (data.idpass_entries?.length) await bulkInsert('idpass_entries', data.idpass_entries.map((e: any) => ({
         id: e.id, game: e.game, short_name: e.shortName || '',
         username: e.username, password: e.password, description: e.description || '',
         assignees: e.assignees || [], created_at: e.createdAt, sort_order: e.sortOrder ?? 0,
+        owner_id: targetWorkspace,
       })));
       if (data.notices?.length) await bulkInsert('notices', data.notices.map((n: any) => ({
         id: n.id, title: n.title, body: n.body, link: n.link || '',
         recipients: n.recipients || [], created_at: n.createdAt, sort_order: n.sortOrder ?? 0,
+        owner_id: targetWorkspace,
       })));
       setImportStatus('✓ Import complete. Refresh the page to see imported data.');
     } catch (e: any) { setImportStatus('Import failed: ' + friendlyError(e)); }
@@ -1312,17 +1419,19 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
             </div>
           </div>
 
-          {/* Backup & restore */}
-          <div style={S.softCard}>
-            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Backup &amp; restore</div>
-            <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>Export all data as a JSON file, or restore from a previous backup.</div>
-            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-              <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
-              <Btn onClick={() => fileRef.current?.click()}>↑ Import from backup</Btn>
-              <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} style={{ display: 'none' }} />
+          {/* Backup & restore — admins only (sub-admins are read-only and must not be able to dump/modify workspace data) */}
+          {isAdminRole(user.role) && (
+            <div style={S.softCard}>
+              <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Backup &amp; restore</div>
+              <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>Export all data from your workspace as a JSON file, or restore from a previous backup.</div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
+                <Btn onClick={() => fileRef.current?.click()}>↑ Import from backup</Btn>
+                <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} style={{ display: 'none' }} />
+              </div>
+              {importStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{importStatus}</div>}
             </div>
-            {importStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{importStatus}</div>}
-          </div>
+          )}
         </div>
       </div>
     </div>
@@ -1334,6 +1443,13 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   const isAdmin = isAdminRole(user.role);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // v19: Resolve which workspace this user "lives in".
+  // Used by every loader to scope queries.
+  //   Zeus      → 'zeus'
+  //   Co-admin  → their own user id (they own a workspace)
+  //   Sub-admin → their parent admin's id (whoever created them)
+  const workspaceId = useMemo(() => workspaceIdForUser(user), [user]);
 
   const getInitialTab = () => {
     if (typeof window === 'undefined') return 'notice';
@@ -1363,15 +1479,16 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   const [aboutContent, setAboutContent] = useState<AboutContent>(DEFAULT_ABOUT);
   const [loaded, setLoaded] = useState(false);
 
-  // Per-table reloaders — used both for initial load and smart realtime updates
+  // Per-table reloaders — scoped by current workspace.
+  // about_content stays SHARED (no ownerId) per design decision.
   const reloaders = useMemo(() => ({
-    sub_admins: async () => { try { setSubs(await loadSubs()); } catch (e) { console.error(e); } },
-    backend_entries: async () => { try { setBackend(await loadBackend()); } catch (e) { console.error(e); } },
-    game_entries: async () => { try { setGames(await loadGames()); } catch (e) { console.error(e); } },
-    idpass_entries: async () => { try { setIdpass(await loadIdPass()); } catch (e) { console.error(e); } },
-    notices: async () => { try { setNotices(await loadNotices()); } catch (e) { console.error(e); } },
+    sub_admins: async () => { try { setSubs(await loadSubs(workspaceId)); } catch (e) { console.error(e); } },
+    backend_entries: async () => { try { setBackend(await loadBackend(workspaceId)); } catch (e) { console.error(e); } },
+    game_entries: async () => { try { setGames(await loadGames(workspaceId)); } catch (e) { console.error(e); } },
+    idpass_entries: async () => { try { setIdpass(await loadIdPass(workspaceId)); } catch (e) { console.error(e); } },
+    notices: async () => { try { setNotices(await loadNotices(workspaceId)); } catch (e) { console.error(e); } },
     about_content: async () => { try { setAboutContent(await loadAbout()); } catch (e) { console.error(e); } },
-  }), []);
+  }), [workspaceId]);
 
   // Full reload (used after bulk imports)
   const reloadAll = useCallback(async () => {
@@ -1391,6 +1508,12 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   useEffect(() => {
     let alive = true;
     const timersRef = debounceTimers.current;
+    // v19: When switching accounts (activeKey changes) we MUST clear data first,
+    // otherwise the previous workspace's content briefly flashes on screen
+    // before the new workspace's data arrives. Reset loaded to false so the
+    // splash/loader shows during the gap.
+    setLoaded(false);
+    setSubs([]); setBackend([]); setGames([]); setIdpass([]); setNotices([]);
     (async () => {
       await reloadAll();
       if (alive) setLoaded(true);
@@ -1481,6 +1604,44 @@ export default function InfosApp() {
     setAccounts(accs);
     if (accs.length > 0) setActiveKey(act && accs.find((a) => accKey(a) === act) ? act : accKey(accs[0]));
     setHydrated(true);
+
+    // v19: Validate persisted sub-admin / co-admin accounts against the DB.
+    // If the user was deleted by an admin, sign them out of this device.
+    // Zeus is always valid (zeus_creds is protected by single-row check).
+    // Failures (offline, network) are silent — we keep the cached session for
+    // offline use and re-validate next reload.
+    if (accs.length > 0) {
+      (async () => {
+        const subAccs = accs.filter((a: any) => a.role !== 'zeus' && a.id);
+        if (subAccs.length === 0) return;
+        try {
+          const validations = await Promise.all(
+            subAccs.map(async (a: any) => {
+              const row = await loadSubById(a.id).catch(() => undefined);
+              // undefined = network failure (don't sign out); null = confirmed deleted
+              return { acc: a, exists: row === undefined ? true : row !== null };
+            })
+          );
+          const stillValid = accs.filter((a: any) => {
+            if (a.role === 'zeus') return true;
+            const v = validations.find(v => accKey(v.acc) === accKey(a));
+            return v ? v.exists : true;
+          });
+          if (stillValid.length !== accs.length) {
+            // Some accounts were revoked. Update state + storage.
+            setAccounts(stillValid);
+            const newActive = stillValid.length === 0
+              ? null
+              : (stillValid.find((a: any) => accKey(a) === act) ? act : accKey(stillValid[0]));
+            setActiveKey(newActive);
+            saveSession('ACCOUNTS', stillValid);
+            saveSession('ACTIVE', newActive);
+          }
+        } catch {
+          // Silent fail — keep cached sessions if validation can't run
+        }
+      })();
+    }
   }, []);
 
   const persist = (accs: any[], act: string | null) => { saveSession('ACCOUNTS', accs); saveSession('ACTIVE', act); };

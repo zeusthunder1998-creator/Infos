@@ -5,7 +5,10 @@
 // - Static assets (icons, logo, QR): cache-first — these rarely change.
 // - Supabase API calls and realtime: NEVER cached — always hit the network for fresh data.
 
-const VERSION = 'v18.1';
+// IMPORTANT: bump this version on EVERY release so old caches get cleaned up
+// and users get the new code. Without this, the SW serves the old JS chunks
+// from cache and users miss the update.
+const VERSION = 'v19';
 const STATIC_CACHE = `infos-static-${VERSION}`;
 const RUNTIME_CACHE = `infos-runtime-${VERSION}`;
 

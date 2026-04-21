@@ -60,11 +60,13 @@ export function ConfirmDialog({ open, title, message, confirmLabel = 'Delete', c
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
-      if (e.key === 'Enter') onConfirm();
+      // For destructive actions, do NOT auto-confirm on Enter — user must explicitly click.
+      // This prevents accidentally wiping a co-admin workspace by hitting Enter.
+      if (e.key === 'Enter' && !danger) onConfirm();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [open, onCancel, onConfirm]);
+  }, [open, onCancel, onConfirm, danger]);
 
   if (!open) return null;
   return (
@@ -73,7 +75,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel = 'Delete', c
       <div className="infos-modal" onClick={(e) => e.stopPropagation()}
         style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', padding: '1.5rem', maxWidth: '400px', width: '100%', boxShadow: 'var(--shadow-pop)' }}>
         <div style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px', letterSpacing: '-0.01em' }}>{title}</div>
-        <div style={{ fontSize: '13.5px', color: C.textSecondary, marginBottom: '18px', lineHeight: 1.5 }}>{message}</div>
+        <div style={{ fontSize: '13.5px', color: C.textSecondary, marginBottom: '18px', lineHeight: 1.5, whiteSpace: 'pre-line' }}>{message}</div>
         <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
           <button onClick={onCancel} className="infos-btn" style={S.btn}>{cancelLabel}</button>
           <button onClick={onConfirm} className="infos-btn-primary"
@@ -101,8 +103,8 @@ export function useConfirm() {
       message={state.message}
       confirmLabel={state.confirmLabel}
       danger={state.danger}
-      onConfirm={() => { state.resolve?.(true); setState({ ...state, open: false }); }}
-      onCancel={() => { state.resolve?.(false); setState({ ...state, open: false }); }}
+      onConfirm={() => { state.resolve?.(true); setState((s) => ({ ...s, open: false, resolve: undefined })); }}
+      onCancel={() => { state.resolve?.(false); setState((s) => ({ ...s, open: false, resolve: undefined })); }}
     />
   );
   const confirm = (opts: { title: string; message: string; confirmLabel?: string; danger?: boolean }) =>

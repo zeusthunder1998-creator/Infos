@@ -65,6 +65,7 @@ function rowToGameEntry(r: DbRow): Entry {
     createdAt: Number(r.created_at),
     updatedAt: r.updated_at ? Number(r.updated_at) : null,
     sortOrder: r.sort_order ?? 0,
+    ownerId: r.owner_id || 'zeus',
   };
 }
 function rowToIdPass(r: DbRow): Entry {
@@ -75,6 +76,7 @@ function rowToIdPass(r: DbRow): Entry {
     createdAt: Number(r.created_at),
     updatedAt: r.updated_at ? Number(r.updated_at) : null,
     sortOrder: r.sort_order ?? 0,
+    ownerId: r.owner_id || 'zeus',
   };
 }
 function rowToNotice(r: DbRow): Entry {
@@ -84,6 +86,7 @@ function rowToNotice(r: DbRow): Entry {
     createdAt: Number(r.created_at),
     updatedAt: r.updated_at ? Number(r.updated_at) : null,
     sortOrder: r.sort_order ?? 0,
+    ownerId: r.owner_id || 'zeus',
   };
 }
 function rowToSub(r: DbRow): Entry {
@@ -93,7 +96,23 @@ function rowToSub(r: DbRow): Entry {
     createdAt: Number(r.created_at),
     updatedAt: r.updated_at ? Number(r.updated_at) : null,
     sortOrder: r.sort_order ?? 0,
+    ownerId: r.owner_id || 'zeus',
   };
+}
+
+// ---------- v19: Workspace resolution ----------
+// Determine which workspace a user "sees" when they log in.
+//   Zeus         → 'zeus' (their own workspace)
+//   Co-admin     → their own user id (they ARE a workspace owner)
+//   Sub-admin    → the owner_id stored on their own sub_admins row
+//     (which points to whichever admin created them)
+export function workspaceIdForUser(user: any): string {
+  if (!user) return 'zeus';
+  if (user.role === 'zeus') return 'zeus';
+  if (user.role === 'co') return user.id;   // co-admin is workspace owner
+  // sub-admin: their workspace is determined by their row's owner_id,
+  // which should have been loaded when login happened
+  return user.ownerId || 'zeus';
 }
 
 // ---------- Zeus creds ----------
@@ -109,18 +128,60 @@ export async function saveZeus(creds: { username: string; password: string }) {
   if (error) throw error;
 }
 
-// ---------- Sub-admins ----------
-export async function loadSubs(): Promise<any[]> {
+/**
+ * v19: Find a sub-admin or co-admin by username + password across ALL workspaces.
+ * Used only at login time (before we know which workspace the user belongs to).
+ * Returns the matched sub_admin row (with owner_id) or null.
+ */
+export async function findSubByCredentials(username: string, password: string): Promise<any | null> {
   const sb = getSupabase();
-  const { data, error } = await sb.from('sub_admins').select('*').order('sort_order');
+  const { data, error } = await sb.from('sub_admins')
+    .select('*')
+    .eq('username', username)
+    .eq('password', password)
+    .maybeSingle();
+  if (error || !data) return null;
+  return rowToSub(data);
+}
+
+// ---------- Sub-admins (v19: scoped to workspace) ----------
+// ownerId = 'zeus' for Zeus's sub-admins, or a co-admin's user id for their sub-admins.
+// Also returns co-admins (which Zeus creates at owner_id='zeus') — caller can filter by role.
+export async function loadSubs(ownerId: string = 'zeus'): Promise<any[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb.from('sub_admins')
+    .select('*')
+    .eq('owner_id', ownerId)
+    .order('sort_order');
   if (error) { console.error(error); return []; }
   return (data || []).map(rowToSub);
 }
-export async function addSub(sub: { id: string; username: string; password: string; role: 'sub' | 'co'; createdAt: number; sortOrder: number }) {
+/**
+ * Load a single sub-admin row by id. Used during login to resolve which workspace
+ * a sub-admin belongs to.
+ */
+/**
+ * Load a single sub-admin row by id.
+ * Returns null ONLY if the row doesn't exist (confirmed deleted).
+ * Throws on network/DB errors so callers can distinguish "user gone" from "can't reach server".
+ * Used by session validation on app load.
+ */
+export async function loadSubById(id: string): Promise<any | null> {
+  const sb = getSupabase();
+  const { data, error } = await sb.from('sub_admins')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw error;       // network/DB problem — caller should NOT treat as deletion
+  if (!data) return null;       // confirmed not-found — caller can sign user out
+  return rowToSub(data);
+}
+export async function addSub(sub: { id: string; username: string; password: string; role: 'sub' | 'co'; createdAt: number; sortOrder: number; ownerId: string }) {
   const sb = getSupabase();
   const { error } = await sb.from('sub_admins').insert({
     id: sub.id, username: sub.username, password: sub.password, role: sub.role,
     created_at: sub.createdAt, sort_order: sub.sortOrder,
+    owner_id: sub.ownerId,
   });
   if (error) throw error;
 }
@@ -130,10 +191,63 @@ export async function deleteSub(id: string) {
   if (error) throw error;
 }
 
-// ---------- Generic helpers ----------
-async function loadList(table: string, mapper: (r: DbRow) => Entry): Promise<Entry[]> {
+/**
+ * v19: Cascade delete a co-admin's entire workspace.
+ * Removes:
+ *   1. all sub-admins owned by this co-admin
+ *   2. all content (notices, backend, games, idpass) owned by this co-admin
+ *   3. the co-admin themselves
+ * Called only from the Create Admin tab when Zeus removes a co-admin.
+ */
+export async function deleteCoAdminWorkspace(coAdminId: string) {
   const sb = getSupabase();
-  const { data, error } = await sb.from(table).select('*').order('sort_order');
+  const workspaceId = coAdminId; // co-admin's id is their workspace owner_id
+  // Delete all content in this workspace (parallel, best-effort)
+  const [s1, s2, s3, s4, s5] = await Promise.all([
+    sb.from('sub_admins').delete().eq('owner_id', workspaceId),
+    sb.from('backend_entries').delete().eq('owner_id', workspaceId),
+    sb.from('game_entries').delete().eq('owner_id', workspaceId),
+    sb.from('idpass_entries').delete().eq('owner_id', workspaceId),
+    sb.from('notices').delete().eq('owner_id', workspaceId),
+  ]);
+  // Check for errors on any of the content deletions
+  const firstErr = [s1, s2, s3, s4, s5].find(r => r.error);
+  if (firstErr?.error) throw firstErr.error;
+  // Finally, delete the co-admin account itself
+  const { error } = await sb.from('sub_admins').delete().eq('id', coAdminId);
+  if (error) throw error;
+}
+
+/**
+ * v19: Count how many items a co-admin's workspace contains.
+ * Used to show an informative confirmation dialog before cascade delete.
+ */
+export async function countWorkspaceContents(coAdminId: string): Promise<{ subAdmins: number; notices: number; backend: number; games: number; idpass: number }> {
+  const sb = getSupabase();
+  const ws = coAdminId;
+  const [s, n, b, g, i] = await Promise.all([
+    sb.from('sub_admins').select('id', { count: 'exact', head: true }).eq('owner_id', ws),
+    sb.from('notices').select('id', { count: 'exact', head: true }).eq('owner_id', ws),
+    sb.from('backend_entries').select('id', { count: 'exact', head: true }).eq('owner_id', ws),
+    sb.from('game_entries').select('id', { count: 'exact', head: true }).eq('owner_id', ws),
+    sb.from('idpass_entries').select('id', { count: 'exact', head: true }).eq('owner_id', ws),
+  ]);
+  return {
+    subAdmins: s.count || 0,
+    notices: n.count || 0,
+    backend: b.count || 0,
+    games: g.count || 0,
+    idpass: i.count || 0,
+  };
+}
+
+// ---------- Generic helpers (v19: scoped to workspace) ----------
+async function loadList(table: string, mapper: (r: DbRow) => Entry, ownerId: string = 'zeus'): Promise<Entry[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb.from(table)
+    .select('*')
+    .eq('owner_id', ownerId)
+    .order('sort_order');
   if (error) { console.error(error); return []; }
   return (data || []).map(mapper);
 }
@@ -160,9 +274,9 @@ async function updateAssignees(table: string, id: string, field: 'assignees' | '
   if (error) throw error;
 }
 
-// ---------------- Backend / Games ----------------
-export async function loadBackend() { return loadList('backend_entries', rowToGameEntry); }
-export async function loadGames() { return loadList('game_entries', rowToGameEntry); }
+// ---------------- Backend / Games (v19: workspace-scoped) ----------------
+export async function loadBackend(ownerId: string = 'zeus') { return loadList('backend_entries', rowToGameEntry, ownerId); }
+export async function loadGames(ownerId: string = 'zeus') { return loadList('game_entries', rowToGameEntry, ownerId); }
 
 export async function addGameEntry(table: 'backend_entries' | 'game_entries', e: Entry) {
   await insertRow(table, {
@@ -170,6 +284,7 @@ export async function addGameEntry(table: 'backend_entries' | 'game_entries', e:
     link: e.link, description: e.description || '',
     assignees: e.assignees || [],
     created_at: e.createdAt, sort_order: e.sortOrder,
+    owner_id: e.ownerId || 'zeus',
   });
 }
 export async function updateGameEntry(table: 'backend_entries' | 'game_entries', id: string, patch: Partial<Entry>) {
@@ -195,14 +310,15 @@ export async function updateGameAssignees(table: 'backend_entries' | 'game_entri
   await updateAssignees(table, id, 'assignees', assignees);
 }
 
-// ---------- Id & Pass ----------
-export async function loadIdPass() { return loadList('idpass_entries', rowToIdPass); }
+// ---------- Id & Pass (v19: workspace-scoped) ----------
+export async function loadIdPass(ownerId: string = 'zeus') { return loadList('idpass_entries', rowToIdPass, ownerId); }
 export async function addIdPass(e: Entry) {
   await insertRow('idpass_entries', {
     id: e.id, game: e.game, short_name: e.shortName || '',
     username: e.username, password: e.password,
     description: e.description || '', assignees: e.assignees || [],
     created_at: e.createdAt, sort_order: e.sortOrder,
+    owner_id: e.ownerId || 'zeus',
   });
 }
 export async function updateIdPass(id: string, patch: Partial<Entry>) {
@@ -229,12 +345,13 @@ export async function updateIdPassAssignees(id: string, assignees: string[]) {
   await updateAssignees('idpass_entries', id, 'assignees', assignees);
 }
 
-// ---------- Notices ----------
-export async function loadNotices() { return loadList('notices', rowToNotice); }
+// ---------- Notices (v19: workspace-scoped) ----------
+export async function loadNotices(ownerId: string = 'zeus') { return loadList('notices', rowToNotice, ownerId); }
 export async function addNotice(n: Entry) {
   await insertRow('notices', {
     id: n.id, title: n.title, body: n.body, link: n.link || '',
     recipients: n.recipients || [], created_at: n.createdAt, sort_order: n.sortOrder,
+    owner_id: n.ownerId || 'zeus',
   });
 }
 export async function updateNotice(id: string, patch: Partial<Entry>) {
@@ -313,21 +430,32 @@ export async function bulkInsert(table: string, rows: any[]) {
   if (error) throw error;
 }
 
-// ---------- Full export / import ----------
-export async function exportAll() {
-  const [subs, backend, games, idpass, notices, zeus] = await Promise.all([
-    loadSubs(), loadBackend(), loadGames(), loadIdPass(), loadNotices(), loadZeus(),
-  ]);
-  return {
-    version: 1,
+// ---------- Full export / import (v19: workspace-scoped) ----------
+/**
+ * Export all data for a given workspace.
+ *   ownerId === 'zeus' → Zeus exports their own workspace. Zeus creds included.
+ *   ownerId !== 'zeus' → Co-admin exports their own workspace. Zeus creds NOT included.
+ */
+export async function exportAll(ownerId: string = 'zeus') {
+  const promises: any[] = [
+    loadSubs(ownerId), loadBackend(ownerId), loadGames(ownerId),
+    loadIdPass(ownerId), loadNotices(ownerId),
+  ];
+  if (ownerId === 'zeus') promises.push(loadZeus());
+  const results = await Promise.all(promises);
+  const [subs, backend, games, idpass, notices, zeus] = results;
+  const out: any = {
+    version: 2,                 // bumped from 1 (multi-tenant format)
     exportedAt: new Date().toISOString(),
-    zeus_creds: zeus,
+    workspace: ownerId,
     sub_admins: subs,
     backend_entries: backend,
     game_entries: games,
     idpass_entries: idpass,
     notices,
   };
+  if (zeus) out.zeus_creds = zeus;
+  return out;
 }
 
 // ---------- Realtime subscriptions ----------
@@ -369,7 +497,7 @@ export type AboutContent = {
 export const DEFAULT_ABOUT: AboutContent = {
   developerName: 'Zeus Thunder',
   companyName: 'Thunder Anuprayog',
-  version: 'v18.1',
+  version: 'v19',
   contactEmail: 'zeusthunder1998@gmail.com',
   donationIntro: 'Feel free to donate 💜 Your support keeps the project going.',
   cryptoName: 'USDT',

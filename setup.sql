@@ -1,17 +1,20 @@
 -- ============================================================
--- Infos app — complete database setup (v18.1)
+-- Infos app — complete database setup (v19)
 --
 -- IDEMPOTENT: safe to run on fresh project OR existing schema.
 -- Will:
 --   - Create tables if missing
 --   - Add updated_at column if missing
 --   - Add "role" column to sub_admins if missing (for co-admin support)
---   - Create about_content table for editable About Us
+--   - Add "owner_id" column to all tenant tables (for multi-tenancy, v19)
+--   - Create about_content table for editable About Us (shared)
 --   - (Re)create RLS policies
 --   - Add all tables to realtime publication (for live sync)
 --   - Create Storage bucket "about-assets" for editable QR
 --   - Add Storage policies so app can upload/read QR
 -- Does NOT drop existing data.
+-- Migration note: existing rows automatically assigned to Zeus workspace
+-- (owner_id defaults to 'zeus' via column default).
 -- ============================================================
 
 -- ==============================================================
@@ -96,7 +99,29 @@ alter table notices          add column if not exists updated_at bigint;
 -- Role column on sub_admins ('sub' = sub-admin, 'co' = co-admin)
 alter table sub_admins       add column if not exists role text not null default 'sub';
 
--- Editable About Us content (always exactly 1 row)
+-- ==============================================================
+-- v19: Multi-tenant workspaces
+-- owner_id identifies which workspace each row belongs to.
+--   'zeus'        = Zeus's own workspace
+--   'sub:<id>'    = a co-admin's workspace (the co-admin's sub_admins.id)
+-- Zeus only creates co-admins; co-admins create their own sub-admins in
+-- their isolated workspace. Migration default of 'zeus' means all existing
+-- data is preserved in Zeus's workspace.
+-- ==============================================================
+alter table sub_admins       add column if not exists owner_id text not null default 'zeus';
+alter table backend_entries  add column if not exists owner_id text not null default 'zeus';
+alter table game_entries     add column if not exists owner_id text not null default 'zeus';
+alter table idpass_entries   add column if not exists owner_id text not null default 'zeus';
+alter table notices          add column if not exists owner_id text not null default 'zeus';
+
+-- Indexes on owner_id for query performance (most queries filter by owner)
+create index if not exists sub_admins_owner_idx      on sub_admins(owner_id);
+create index if not exists backend_entries_owner_idx on backend_entries(owner_id);
+create index if not exists game_entries_owner_idx    on game_entries(owner_id);
+create index if not exists idpass_entries_owner_idx  on idpass_entries(owner_id);
+create index if not exists notices_owner_idx         on notices(owner_id);
+
+-- Editable About Us content (always exactly 1 row — SHARED across all workspaces)
 create table if not exists about_content (
   id int primary key default 1,
   developer_name text,

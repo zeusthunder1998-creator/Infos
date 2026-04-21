@@ -9,7 +9,9 @@ function TextInput(props: any) { return <input {...props} className={'infos-inpu
 function TextArea(props: any) { return <textarea {...props} className={'infos-input ' + (props.className || '')} style={{ ...S.textarea, ...(props.style || {}) }} />; }
 
 function AssigneePicker({ subs, selected, onChange }: any) {
-  if (subs.length === 0) {
+  // v19: only sub-admins can be assignees (co-admins are workspace owners, not assignees)
+  const subOnly = (subs || []).filter((s: any) => s.role !== 'co');
+  if (subOnly.length === 0) {
     return <div style={{ fontSize: '12.5px', color: 'var(--warn-text)', padding: '10px 12px', background: 'var(--warn-soft)', borderRadius: '8px', border: '1px solid var(--warn-border)' }}>
       No sub-admins exist yet.
     </div>;
@@ -27,7 +29,7 @@ function AssigneePicker({ subs, selected, onChange }: any) {
         style={{ padding: '5px 12px', fontSize: '12.5px', border: allOn ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: allOn ? C.accent : C.cardBg, color: allOn ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: 600, transition: 'all 0.15s' }}>
         {allOn ? '✓ All sub-admins' : '◎ Assign to all'}
       </button>
-      {subs.map((s: any) => {
+      {subOnly.map((s: any) => {
         const on = !allOn && selected.includes(s.id);
         return (
           <button key={s.id} type="button" onClick={() => toggleOne(s.id)} disabled={allOn} className="infos-pill"
