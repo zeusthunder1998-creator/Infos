@@ -1,31 +1,41 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, memo } from 'react';
 import Image from 'next/image';
 import {
   DEFAULT_ZEUS, ALL_SENTINEL, uid, accKey,
-  isVisibleToSub, isAssignedAll,
+  isVisibleToSub, isAssignedAll, friendlyError,
   loadSession, saveSession,
   loadZeus, saveZeus,
-  loadSubs, addSub, deleteSub,
-  loadBackend, loadGames, addGameEntry, deleteGameEntry, reorderGames, updateGameAssignees,
-  loadIdPass, addIdPass, deleteIdPass, reorderIdPass, updateIdPassAssignees,
-  loadNotices, addNotice, deleteNotice, reorderNotices, updateNoticeRecipients,
+  loadSubs, addSub, deleteSub, updateSub,
+  loadBackend, loadGames, addGameEntry, updateGameEntry, deleteGameEntry, bulkDeleteGameEntries, reorderGames, updateGameAssignees,
+  loadIdPass, addIdPass, updateIdPass, deleteIdPass, bulkDeleteIdPass, reorderIdPass, updateIdPassAssignees,
+  loadNotices, addNotice, updateNotice, deleteNotice, bulkDeleteNotices, reorderNotices, updateNoticeRecipients,
   subscribeAll, exportAll, bulkInsert,
+  loadAbout, DEFAULT_ABOUT, AboutContent,
 } from '@/lib/storage';
 import { C, S, tabStyle } from './styles';
-import { Timestamp, ConfirmDialog, useConfirm, useTheme, SearchBar, Theme } from './ui';
+import { Timestamp, useConfirm, useTheme, SearchBar, Theme, timeAgo, fullDateTime } from './ui';
 import { BulkAssignModal, BulkEntry } from './BulkAssign';
+import { EditGameModal, EditIdPassModal, EditNoticeModal, EditSubAdminModal } from './EditModals';
+import { AboutModal } from './AboutModal';
 
-// ---------------- Splash ----------------
+// Role helpers
+const isAdminRole = (role: string) => role === 'zeus' || role === 'co';
+const isZeus = (role: string) => role === 'zeus';
+
+// ---------------- Splash (tap anywhere to skip for instant feel) ----------------
 function Splash({ ms, onDone, subtitle, small }: any) {
+  const [done, setDone] = useState(false);
   useEffect(() => {
-    const t = setTimeout(onDone, ms);
+    if (done) return;
+    const t = setTimeout(() => { setDone(true); onDone(); }, ms);
     return () => clearTimeout(t);
-  }, [ms, onDone]);
+  }, [ms, onDone, done]);
+  const skip = () => { if (!done) { setDone(true); onDone(); } };
   const size = small ? 110 : 140;
   return (
-    <div style={{ minHeight: small ? '360px' : '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem 1rem', animation: 'infosFadeIn 0.5s ease-out' }}>
+    <div onClick={skip} style={{ minHeight: small ? '360px' : '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2rem 1rem', animation: 'infosFadeIn 0.4s ease-out', cursor: 'pointer', userSelect: 'none' }}>
       <div style={{ width: size, height: size, position: 'relative', animation: 'infosPulse 2s ease-in-out infinite' }}>
         <Image src="/logo.png" alt="Infos" fill style={{ objectFit: 'contain' }} priority />
       </div>
@@ -36,6 +46,7 @@ function Splash({ ms, onDone, subtitle, small }: any) {
         <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: C.accent, animation: 'infosDot 1.2s ease-in-out infinite 0.15s' }} />
         <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: C.accent, animation: 'infosDot 1.2s ease-in-out infinite 0.3s' }} />
       </div>
+      <div style={{ marginTop: '1rem', fontSize: '10.5px', color: C.textTertiary, fontWeight: 500, letterSpacing: '0.05em' }}>Tap to continue</div>
     </div>
   );
 }
@@ -71,8 +82,7 @@ function CopyButton({ value, label }: { value: string; label?: string }) {
   );
 }
 
-// ---------------- Reorderable list (drag + arrows) ----------------
-function ReorderList({ items, canReorder, onReorder, renderItem, keyFn }: any) {
+function ReorderList({ items, canReorder, canSelect, selectedIds, onToggleSelect, onReorder, renderItem, keyFn }: any) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const start = (e: any, id: string) => { setDragId(id); e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', id); } catch {} };
@@ -86,7 +96,6 @@ function ReorderList({ items, canReorder, onReorder, renderItem, keyFn }: any) {
     }
     setDragId(null); setOverId(null);
   };
-
   const move = (i: number, dir: -1 | 1) => {
     const newIdx = i + dir;
     if (newIdx < 0 || newIdx >= items.length) return;
@@ -98,26 +107,29 @@ function ReorderList({ items, canReorder, onReorder, renderItem, keyFn }: any) {
     <div>
       {items.map((item: any, idx: number) => {
         const id = keyFn(item);
+        const isSelected = canSelect && selectedIds?.includes(id);
         const isDraggingOver = overId === id && dragId && dragId !== id;
         const style = {
           ...S.item,
           ...(dragId === id ? { opacity: 0.4 } : {}),
           ...(isDraggingOver ? { borderColor: C.accent, boxShadow: `0 0 0 2px ${C.accentSoft}` } : {}),
+          ...(isSelected ? { borderColor: C.accent, background: C.accentSoft } : {}),
         };
         return (
-          <div key={id} className="infos-item" style={style}
+          <div key={id} className="infos-item infos-item-enter" style={style}
             onDragOver={canReorder ? (e) => over(e, id) : undefined}
             onDrop={canReorder ? (e) => drop(e, id) : undefined}
             onDragEnd={() => { setDragId(null); setOverId(null); }}>
+            {canSelect && (
+              <div style={{ flexShrink: 0, width: '28px', display: 'flex', alignItems: 'flex-start', paddingTop: '2px' }}>
+                <input type="checkbox" checked={!!isSelected} onChange={() => onToggleSelect(id)}
+                  style={{ width: '18px', height: '18px', cursor: 'pointer', accentColor: C.accent }} />
+              </div>
+            )}
             {canReorder && (
               <div style={{ flexShrink: 0, width: '32px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', paddingTop: '2px' }}>
                 <button onClick={(e) => { e.stopPropagation(); move(idx, -1); }} disabled={idx === 0} className="infos-arrow-btn" title="Move up" type="button">▲</button>
-                <div
-                  draggable
-                  onDragStart={(e) => start(e, id)}
-                  style={{ ...S.dragHandle, width: 'auto', padding: '2px 0' }}
-                  title="Drag to reorder"
-                >⋮⋮</div>
+                <div draggable onDragStart={(e) => start(e, id)} style={{ ...S.dragHandle, width: 'auto', padding: '2px 0' }} title="Drag to reorder">⋮⋮</div>
                 <button onClick={(e) => { e.stopPropagation(); move(idx, 1); }} disabled={idx === items.length - 1} className="infos-arrow-btn" title="Move down" type="button">▼</button>
               </div>
             )}
@@ -147,17 +159,17 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
       } else {
         const subs = await loadSubs();
         const f = subs.find((s) => s.username === username.trim() && s.password === password);
-        if (f) matched = { role: 'sub', username: f.username, id: f.id };
+        if (f) matched = { role: f.role === 'co' ? 'co' : 'sub', username: f.username, id: f.id };
       }
       if (!matched) return setError('Invalid username or password');
       setLoggingIn(matched);
-    } catch {
-      setError('Could not reach server. Check your connection.');
+    } catch (err: any) {
+      setError(friendlyError(err, 'Could not reach server. Check your connection.'));
     } finally { setBusy(false); }
   };
 
   if (loggingIn) {
-    return <Splash ms={2000} subtitle={`Welcome, ${loggingIn.username}`} small
+    return <Splash ms={900} subtitle={`Welcome, ${loggingIn.username}`} small
       onDone={() => {
         const ok = onLogin(loggingIn);
         if (ok === false) { setLoggingIn(null); setError('This account is already signed in'); }
@@ -190,7 +202,8 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
   );
 }
 
-function AccountSwitcher({ accounts, activeKey, onSwitch, onAddAccount, onSignOut, onSignOutAll, theme, setTheme }: any) {
+// ---------------- Account switcher (with About, Settings, Appearance) ----------------
+function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, onSignOut, onSignOutAll, onOpenAbout, onOpenSettings, theme, setTheme }: any) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -201,12 +214,18 @@ function AccountSwitcher({ accounts, activeKey, onSwitch, onAddAccount, onSignOu
   }, [open]);
   const active = accounts.find((a: any) => accKey(a) === activeKey);
   if (!active) return null;
-  const avatarBg = (u: any) => (u.role === 'zeus' ? C.accent : '#888780');
+  const avatarBg = (u: any) => u.role === 'zeus' ? C.accent : u.role === 'co' ? '#e17b4a' : '#888780';
+  const roleLabel = (u: any) => u.role === 'zeus' ? 'Main admin' : u.role === 'co' ? 'Co-admin' : 'Sub-admin';
   const avatar = (u: any, size = 28) => (
     <span style={{ width: size, height: size, borderRadius: '50%', background: avatarBg(u), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size >= 28 ? '12px' : '10.5px', fontWeight: 600, flexShrink: 0 }}>
       {u.username.charAt(0).toUpperCase()}
     </span>
   );
+
+  const showSettings = isAdminRole(user.role);
+
+  const menuBtnStyle = { width: 'calc(100% - 8px)', margin: '0 4px', textAlign: 'left' as const, padding: '9px 12px', fontSize: '13px', background: 'transparent', border: 'none', cursor: 'pointer', color: C.textPrimary, borderRadius: '8px', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '8px' };
+
   return (
     <div style={{ position: 'relative' }} ref={ref}>
       <button onClick={() => setOpen(!open)} className="infos-btn" style={{ ...S.btn, display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px 6px 6px' }}>
@@ -216,28 +235,23 @@ function AccountSwitcher({ accounts, activeKey, onSwitch, onAddAccount, onSignOu
       </button>
       {open && (
         <div className="infos-dropdown" style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: '280px', background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '12px', boxShadow: 'var(--shadow-pop)', zIndex: 1000, overflow: 'hidden' }}>
-          <div style={{ padding: '6px 4px', borderBottom: `1px solid ${C.border}`, background: C.cardBg }}>
-            <div style={{ fontSize: '10.5px', color: C.textTertiary, padding: '8px 14px 6px', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>Signed in</div>
-            {accounts.map((a: any) => {
-              const isActive = accKey(a) === activeKey;
-              return (
-                <div key={accKey(a)}
-                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', cursor: isActive ? 'default' : 'pointer', background: isActive ? C.accentSoft : C.cardBg, margin: '0 4px', borderRadius: '8px' }}
-                  onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = C.softBg; }}
-                  onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = C.cardBg; }}>
-                  <div onClick={() => { if (!isActive) onSwitch(accKey(a)); setOpen(false); }} style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
-                    {avatar(a, 30)}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: '13.5px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: isActive ? C.accentText : C.textPrimary }}>{a.username}</div>
-                      <div style={{ fontSize: '11px', color: C.textTertiary, marginTop: '1px', fontWeight: 500 }}>{a.role === 'zeus' ? 'Main admin' : 'Sub-admin'}</div>
-                    </div>
-                    {isActive && <span style={{ fontSize: '11px', color: C.accent, fontWeight: 600 }}>●</span>}
-                  </div>
-                  <button onClick={(e) => { e.stopPropagation(); onSignOut(accKey(a)); setOpen(false); }} title="Sign out" style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: '16px', color: C.textTertiary, lineHeight: 1, borderRadius: '4px' }}>×</button>
-                </div>
-              );
-            })}
+          {/* 1. About Us */}
+          <div style={{ padding: '6px 4px', borderBottom: `1px solid ${C.border}` }}>
+            <button onClick={() => { onOpenAbout(); setOpen(false); }} style={menuBtnStyle}
+              onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+              onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+              <span>ℹ️</span> <span>About Us</span>
+            </button>
+            {showSettings && (
+              <button onClick={() => { onOpenSettings(); setOpen(false); }} style={menuBtnStyle}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+                <span>⚙️</span> <span>Settings</span>
+              </button>
+            )}
           </div>
+
+          {/* 2. Appearance */}
           <div style={{ padding: '8px 8px 4px', borderBottom: `1px solid ${C.border}` }}>
             <div style={{ fontSize: '10.5px', color: C.textTertiary, padding: '4px 10px 6px', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>Appearance</div>
             <div style={{ display: 'flex', gap: '4px', padding: '0 4px 4px' }}>
@@ -253,13 +267,37 @@ function AccountSwitcher({ accounts, activeKey, onSwitch, onAddAccount, onSignOu
               ))}
             </div>
           </div>
+
+          {/* 3. Signed-in accounts */}
+          <div style={{ padding: '6px 4px', borderBottom: `1px solid ${C.border}` }}>
+            <div style={{ fontSize: '10.5px', color: C.textTertiary, padding: '8px 14px 6px', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>Signed in</div>
+            {accounts.map((a: any) => {
+              const isActive = accKey(a) === activeKey;
+              return (
+                <div key={accKey(a)}
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', cursor: isActive ? 'default' : 'pointer', background: isActive ? C.accentSoft : C.cardBg, margin: '0 4px', borderRadius: '8px' }}
+                  onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = C.softBg; }}
+                  onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = C.cardBg; }}>
+                  <div onClick={() => { if (!isActive) onSwitch(accKey(a)); setOpen(false); }} style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: 1, minWidth: 0 }}>
+                    {avatar(a, 30)}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13.5px', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: isActive ? C.accentText : C.textPrimary }}>{a.username}</div>
+                      <div style={{ fontSize: '11px', color: C.textTertiary, marginTop: '1px', fontWeight: 500 }}>{roleLabel(a)}</div>
+                    </div>
+                    {isActive && <span style={{ fontSize: '11px', color: C.accent, fontWeight: 600 }}>●</span>}
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); onSignOut(accKey(a)); setOpen(false); }} title="Sign out" style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px', fontSize: '16px', color: C.textTertiary, lineHeight: 1, borderRadius: '4px' }}>×</button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 4. Add / sign out */}
           <div style={{ padding: '6px 4px', background: C.cardBg }}>
-            <button onClick={() => { onAddAccount(); setOpen(false); }}
-              style={{ width: 'calc(100% - 8px)', margin: '0 4px', textAlign: 'left', padding: '9px 12px', fontSize: '13px', background: 'transparent', border: 'none', cursor: 'pointer', color: C.textPrimary, borderRadius: '8px', fontWeight: 500 }}
+            <button onClick={() => { onAddAccount(); setOpen(false); }} style={menuBtnStyle}
               onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
               onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>+ Add another account</button>
-            <button onClick={() => { onSignOutAll(); setOpen(false); }}
-              style={{ width: 'calc(100% - 8px)', margin: '0 4px', textAlign: 'left', padding: '9px 12px', fontSize: '13px', background: 'transparent', border: 'none', cursor: 'pointer', color: C.danger, borderRadius: '8px', fontWeight: 500 }}
+            <button onClick={() => { onSignOutAll(); setOpen(false); }} style={{ ...menuBtnStyle, color: C.danger }}
               onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.dangerSoft)}
               onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>Sign out of all accounts</button>
           </div>
@@ -270,8 +308,10 @@ function AccountSwitcher({ accounts, activeKey, onSwitch, onAddAccount, onSignOu
 }
 
 function AssigneePicker({ subs, selected, onChange }: any) {
-  if (subs.length === 0) {
-    return <div style={{ fontSize: '12.5px', color: 'var(--warn-text)', padding: '10px 12px', background: 'var(--warn-soft)', borderRadius: '8px', border: '1px solid var(--warn-border)' }}>No sub-admins exist yet. Create them in the Sub-admins tab first.</div>;
+  // Only sub-admins (not co-admins) get assignments for content visibility
+  const subOnly = subs.filter((s: any) => s.role !== 'co');
+  if (subOnly.length === 0) {
+    return <div style={{ fontSize: '12.5px', color: 'var(--warn-text)', padding: '10px 12px', background: 'var(--warn-soft)', borderRadius: '8px', border: '1px solid var(--warn-border)' }}>No sub-admins exist yet. Create some in the Create Admin tab first.</div>;
   }
   const allOn = selected.includes(ALL_SENTINEL);
   const toggleAll = () => { if (allOn) onChange([]); else onChange([ALL_SENTINEL]); };
@@ -286,7 +326,7 @@ function AssigneePicker({ subs, selected, onChange }: any) {
         style={{ padding: '5px 12px', fontSize: '12.5px', border: allOn ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: allOn ? C.accent : C.cardBg, color: allOn ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: 600, transition: 'all 0.15s' }}>
         {allOn ? '✓ All sub-admins' : '◎ Assign to all'}
       </button>
-      {subs.map((s: any) => {
+      {subOnly.map((s: any) => {
         const on = !allOn && selected.includes(s.id);
         const disabled = allOn;
         return (
@@ -312,14 +352,42 @@ function ReorderHint({ canReorder }: any) {
   return <div style={{ fontSize: '12px', color: C.textTertiary, marginBottom: '10px', fontWeight: 500 }}>Use ▲/▼ buttons or drag ⋮⋮ to reorder.</div>;
 }
 
+function SelectionToolbar({ isAdmin, inSelectMode, onEnter, onExit, selectedCount, onBulkDelete, onSelectAll, onDeselectAll, totalVisible }: any) {
+  if (!isAdmin) return null;
+  if (!inSelectMode) {
+    return (
+      <div style={{ marginBottom: '10px' }}>
+        <button onClick={onEnter} className="infos-btn" style={{ ...S.btn, fontSize: '12.5px', padding: '6px 12px' }}>☐ Select multiple</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', padding: '10px 12px', background: C.accentSoft, border: `1px solid ${C.accent}`, borderRadius: '8px', marginBottom: '10px' }}>
+      <span style={{ fontSize: '13px', fontWeight: 600, color: C.accentText }}>{selectedCount} selected</span>
+      <button onClick={onSelectAll} className="infos-btn" style={{ ...S.btn, fontSize: '11.5px', padding: '4px 10px' }}>Select all ({totalVisible})</button>
+      {selectedCount > 0 && <button onClick={onDeselectAll} className="infos-btn" style={{ ...S.btn, fontSize: '11.5px', padding: '4px 10px' }}>Deselect</button>}
+      <div style={{ flex: 1 }} />
+      {selectedCount > 0 && (
+        <button onClick={onBulkDelete} style={{ ...S.btnDanger, fontSize: '12px', padding: '6px 12px', fontWeight: 600 }}>Delete {selectedCount}</button>
+      )}
+      <button onClick={onExit} className="infos-btn" style={{ ...S.btn, fontSize: '11.5px', padding: '4px 10px' }}>Done</button>
+    </div>
+  );
+}
+
 function EntryForm({ fields, subs, onSubmit, submitLabel = 'Add' }: any) {
   const init = () => ({ ...Object.fromEntries(fields.map((f: any) => [f.key, ''])), description: '', assignees: [] as string[] });
   const [v, setV] = useState<any>(init);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
   const handle = async () => {
-    if (fields.some((f: any) => !v[f.key].trim())) return;
-    if (v.assignees.length === 0) return;
-    setBusy(true); await onSubmit(v); setBusy(false); setV(init());
+    setErr('');
+    if (fields.some((f: any) => !v[f.key].trim())) { setErr('All fields are required'); return; }
+    if (v.assignees.length === 0) { setErr('Assign to at least one sub-admin or "Assign to all"'); return; }
+    setBusy(true);
+    try { await onSubmit(v); setV(init()); }
+    catch (e: any) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
   };
   return (
     <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
@@ -339,6 +407,7 @@ function EntryForm({ fields, subs, onSubmit, submitLabel = 'Add' }: any) {
         <label style={S.label}>Assign to sub-admin(s)</label>
         <AssigneePicker subs={subs} selected={v.assignees} onChange={(a: any) => setV({ ...v, assignees: a })} />
       </div>
+      {err && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
       <div style={{ marginTop: '14px', textAlign: 'right' }}>
         <Btn primary onClick={handle} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : submitLabel}</Btn>
       </div>
@@ -350,10 +419,16 @@ function IdPassEntryForm({ subs, onSubmit }: any) {
   const init = () => ({ game: '', shortName: '', username: '', password: '', description: '', assignees: [] as string[] });
   const [v, setV] = useState<any>(init);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [showPass, setShowPass] = useState(false);
   const handle = async () => {
-    if (!v.game.trim() || !v.username.trim() || !v.password.trim()) return;
-    if (v.assignees.length === 0) return;
-    setBusy(true); await onSubmit(v); setBusy(false); setV(init());
+    setErr('');
+    if (!v.game.trim() || !v.username.trim() || !v.password.trim()) { setErr('Game, username, and password are required'); return; }
+    if (v.assignees.length === 0) { setErr('Assign to at least one sub-admin or "Assign to all"'); return; }
+    setBusy(true);
+    try { await onSubmit(v); setV(init()); setShowPass(false); }
+    catch (e: any) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
   };
   return (
     <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
@@ -363,7 +438,16 @@ function IdPassEntryForm({ subs, onSubmit }: any) {
       </div>
       <div className="infos-grid2" style={{ ...S.grid2, marginTop: '10px' }}>
         <div><label style={S.label}>Username</label><TextInput value={v.username} onChange={(e: any) => setV({ ...v, username: e.target.value })} placeholder="Login username" /></div>
-        <div><label style={S.label}>Password</label><TextInput value={v.password} onChange={(e: any) => setV({ ...v, password: e.target.value })} placeholder="Login password" /></div>
+        <div>
+          <label style={S.label}>Password</label>
+          <div style={{ position: 'relative' }}>
+            <TextInput type={showPass ? 'text' : 'password'} value={v.password} onChange={(e: any) => setV({ ...v, password: e.target.value })} placeholder="Login password" style={{ paddingRight: '60px' }} />
+            <button type="button" onClick={() => setShowPass(!showPass)}
+              style={{ position: 'absolute', right: '6px', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', fontSize: '11.5px', color: C.textSecondary, cursor: 'pointer', padding: '4px 8px', fontWeight: 500 }}>
+              {showPass ? 'Hide' : 'Show'}
+            </button>
+          </div>
+        </div>
       </div>
       <div style={{ marginTop: '12px' }}>
         <label style={S.label}>Description / note (optional)</label>
@@ -373,6 +457,7 @@ function IdPassEntryForm({ subs, onSubmit }: any) {
         <label style={S.label}>Assign to sub-admin(s)</label>
         <AssigneePicker subs={subs} selected={v.assignees} onChange={(a: any) => setV({ ...v, assignees: a })} />
       </div>
+      {err && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
       <div style={{ marginTop: '14px', textAlign: 'right' }}>
         <Btn primary onClick={handle} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Add'}</Btn>
       </div>
@@ -389,7 +474,10 @@ function NoticeEntryForm({ subs, onSubmit }: any) {
     setErr('');
     if (!v.title.trim() || !v.body.trim()) return setErr('Title and message are required');
     if (v.assignees.length === 0) return setErr('Pick at least one recipient');
-    setBusy(true); await onSubmit(v); setBusy(false); setV(init());
+    setBusy(true);
+    try { await onSubmit(v); setV(init()); }
+    catch (e: any) { setErr(friendlyError(e)); }
+    finally { setBusy(false); }
   };
   return (
     <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
@@ -415,11 +503,17 @@ function NoticeEntryForm({ subs, onSubmit }: any) {
   );
 }
 
-function GameListTab({ table, role, user, subs, entries, reload, emptyMsg, searchPlaceholder }: any) {
+// ---------------- Tab: Game list (Backend / Games) ----------------
+function GameListTabInner({ table, user, subs, entries, setEntries, reload, emptyMsg }: any) {
+  const isAdmin = isAdminRole(user.role);
   const [confirmEl, confirm] = useConfirm();
   const [q, setQ] = useState('');
+  const [editing, setEditing] = useState<any>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+
   const visible = useMemo(() => {
-    const base = role === 'zeus' ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+    const base = isAdmin ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
     if (!q.trim()) return base;
     const s = q.toLowerCase();
     return base.filter((e: any) =>
@@ -428,18 +522,78 @@ function GameListTab({ table, role, user, subs, entries, reload, emptyMsg, searc
       (e.link || '').toLowerCase().includes(s) ||
       (e.description || '').toLowerCase().includes(s)
     );
-  }, [role, entries, user, q]);
+  }, [isAdmin, entries, user, q]);
   const nextSortOrder = useMemo(() => (entries.length ? Math.max(...entries.map((e: any) => e.sortOrder || 0)) + 1 : 0), [entries]);
+
+  // OPTIMISTIC UPDATES — UI changes instantly, DB saves in background.
+  // On failure we apply the INVERSE operation (rather than restoring a stale snapshot)
+  // so concurrent edits made during the request aren't lost.
   const add = async (vals: any) => {
-    await addGameEntry(table, { ...vals, id: uid(), createdAt: Date.now(), sortOrder: nextSortOrder });
-    await reload();
+    const newEntry = { ...vals, id: uid(), createdAt: Date.now(), sortOrder: nextSortOrder };
+    setEntries((prev: any[]) => [...prev, newEntry]);
+    try { await addGameEntry(table, newEntry); }
+    catch (e: any) { setEntries((prev: any[]) => prev.filter(x => x.id !== newEntry.id)); throw e; }
   };
   const del = async (e: any) => {
     const ok = await confirm({ title: `Delete "${e.gameName}"?`, message: 'This cannot be undone.', confirmLabel: 'Delete', danger: true });
     if (!ok) return;
-    await deleteGameEntry(table, e.id); await reload();
+    // Remember the item we're deleting so we can re-insert on failure
+    const deletedItem = e;
+    setEntries((prev: any[]) => prev.filter(x => x.id !== e.id));
+    try { await deleteGameEntry(table, e.id); }
+    catch (err: any) {
+      // Re-insert preserving position if possible
+      setEntries((prev: any[]) => [...prev, deletedItem].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
   };
-  const reorder = async (no: any[]) => { await reorderGames(table, no.map((e: any) => e.id)); await reload(); };
+  const saveEdit = async (patch: any) => {
+    const id = editing.id;
+    // Capture the prior state of JUST this one item
+    const originalItem = entries.find((x: any) => x.id === id);
+    setEntries((prev: any[]) => prev.map((x: any) => x.id === id ? { ...x, ...patch, updatedAt: Date.now() } : x));
+    try { await updateGameEntry(table, id, patch); }
+    catch (e: any) {
+      if (originalItem) setEntries((prev: any[]) => prev.map((x: any) => x.id === id ? originalItem : x));
+      throw e;
+    }
+  };
+  const reorder = async (no: any[]) => {
+    // Capture only the original sort order of items being reordered
+    const originalOrder = no.map((e: any) => {
+      const orig = entries.find((x: any) => x.id === e.id);
+      return orig ? { id: orig.id, sortOrder: orig.sortOrder } : null;
+    }).filter(Boolean) as { id: string; sortOrder: number }[];
+
+    const reordered = no.map((e: any, i: number) => ({ ...e, sortOrder: i }));
+    const keptIds = new Set(reordered.map((e: any) => e.id));
+    setEntries((prev: any[]) => [...reordered, ...prev.filter((e: any) => !keptIds.has(e.id))]);
+    try { await reorderGames(table, no.map((e: any) => e.id)); }
+    catch (err: any) {
+      // Restore original sort orders
+      setEntries((prev: any[]) => prev.map((x: any) => {
+        const o = originalOrder.find(r => r.id === x.id);
+        return o ? { ...x, sortOrder: o.sortOrder } : x;
+      }).sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+  const bulkDelete = async () => {
+    const ok = await confirm({ title: `Delete ${selected.length} entries?`, message: 'This cannot be undone.', confirmLabel: `Delete ${selected.length}`, danger: true });
+    if (!ok) return;
+    // Remember the items we're deleting so we can re-insert on failure
+    const toDelete = [...selected];
+    const deletedItems = entries.filter((x: any) => toDelete.includes(x.id));
+    setEntries((prev: any[]) => prev.filter(x => !toDelete.includes(x.id)));
+    setSelected([]); setSelectMode(false);
+    try { await bulkDeleteGameEntries(table, toDelete); }
+    catch (err: any) {
+      setEntries((prev: any[]) => [...prev, ...deletedItems].sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+  const toggleSelect = (id: string) => setSelected(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+
   const renderItem = (e: any) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -451,33 +605,58 @@ function GameListTab({ table, role, user, subs, entries, reload, emptyMsg, searc
           <CopyButton value={e.link} label="link" />
         </div>
         {e.description && <div style={S.descBox}>{e.description}</div>}
-        {role === 'zeus' && <AssigneeList assignees={e.assignees || []} subs={subs} />}
+        {isAdmin && <AssigneeList assignees={e.assignees || []} subs={subs} />}
         <Timestamp createdAt={e.createdAt} updatedAt={e.updatedAt} />
       </div>
-      {role === 'zeus' && <Btn danger onClick={() => del(e)}>Delete</Btn>}
+      {isAdmin && !selectMode && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <Btn onClick={() => setEditing(e)} style={{ fontSize: '12px', padding: '5px 10px' }}>Edit</Btn>
+          <Btn danger onClick={() => del(e)}>Delete</Btn>
+        </div>
+      )}
     </div>
   );
+  const canReorder = isAdmin && !q.trim() && !selectMode;
   return (
     <div>
       {confirmEl}
-      {role === 'zeus' && <EntryForm fields={[{ key: 'gameName', label: 'Game name' }, { key: 'shortName', label: 'Short name' }, { key: 'link', label: 'Link', placeholder: 'https://...' }]} subs={subs} onSubmit={add} />}
-      {entries.length > 0 && <SearchBar value={q} onChange={setQ} placeholder={searchPlaceholder || 'Search games, links, descriptions…'} />}
+      <EditGameModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
+      {isAdmin && <EntryForm fields={[{ key: 'gameName', label: 'Game name' }, { key: 'shortName', label: 'Short name' }, { key: 'link', label: 'Link', placeholder: 'https://...' }]} subs={subs} onSubmit={add} />}
+      {entries.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search games, links, descriptions…" />}
+      <SelectionToolbar isAdmin={isAdmin} inSelectMode={selectMode}
+        onEnter={() => setSelectMode(true)} onExit={() => { setSelectMode(false); setSelected([]); }}
+        selectedCount={selected.length} onBulkDelete={bulkDelete}
+        onSelectAll={() => setSelected(visible.map((e: any) => e.id))}
+        onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
       {visible.length === 0 ? <div style={S.empty}>{q.trim() ? 'No matches found.' : emptyMsg}</div> : (
         <div>
-          <ReorderHint canReorder={role === 'zeus' && !q.trim()} />
-          <ReorderList items={visible} canReorder={role === 'zeus' && !q.trim()} onReorder={reorder} renderItem={renderItem} keyFn={(e: any) => e.id} />
+          <ReorderHint canReorder={canReorder} />
+          <ReorderList items={visible} canReorder={canReorder}
+            canSelect={selectMode} selectedIds={selected} onToggleSelect={toggleSelect}
+            onReorder={reorder} renderItem={renderItem} keyFn={(e: any) => e.id} />
         </div>
       )}
     </div>
   );
 }
+const GameListTab = memo(GameListTabInner);
 
-function IdPassTab({ role, user, subs, entries, reload }: any) {
+// ---------------- Tab: Id & Pass ----------------
+function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
+  const isAdmin = isAdminRole(user.role);
   const [confirmEl, confirm] = useConfirm();
   const [reveal, setReveal] = useState<any>({});
   const [q, setQ] = useState('');
+  const [filterSub, setFilterSub] = useState<'all' | string>('all');
+  const [editing, setEditing] = useState<any>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+
   const visible = useMemo(() => {
-    const base = role === 'zeus' ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+    let base = isAdmin ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+    if (isAdmin && filterSub !== 'all') {
+      base = base.filter((e: any) => isVisibleToSub(e.assignees, filterSub));
+    }
     if (!q.trim()) return base;
     const s = q.toLowerCase();
     return base.filter((e: any) =>
@@ -486,15 +665,70 @@ function IdPassTab({ role, user, subs, entries, reload }: any) {
       (e.username || '').toLowerCase().includes(s) ||
       (e.description || '').toLowerCase().includes(s)
     );
-  }, [role, entries, user, q]);
+  }, [isAdmin, entries, user, q, filterSub]);
   const nextSortOrder = useMemo(() => (entries.length ? Math.max(...entries.map((e: any) => e.sortOrder || 0)) + 1 : 0), [entries]);
-  const add = async (vals: any) => { await addIdPass({ ...vals, id: uid(), createdAt: Date.now(), sortOrder: nextSortOrder }); await reload(); };
+  const subOnlyForFilter = useMemo(() => subs.filter((s: any) => s.role !== 'co'), [subs]);
+
+  const add = async (vals: any) => {
+    const newEntry = { ...vals, id: uid(), createdAt: Date.now(), sortOrder: nextSortOrder };
+    setEntries((prev: any[]) => [...prev, newEntry]);
+    try { await addIdPass(newEntry); }
+    catch (e: any) { setEntries((prev: any[]) => prev.filter(x => x.id !== newEntry.id)); throw e; }
+  };
   const del = async (e: any) => {
     const ok = await confirm({ title: `Delete credentials for "${e.game}"?`, message: 'This cannot be undone.', confirmLabel: 'Delete', danger: true });
     if (!ok) return;
-    await deleteIdPass(e.id); await reload();
+    const deletedItem = e;
+    setEntries((prev: any[]) => prev.filter(x => x.id !== e.id));
+    try { await deleteIdPass(e.id); }
+    catch (err: any) {
+      setEntries((prev: any[]) => [...prev, deletedItem].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
   };
-  const reorder = async (no: any[]) => { await reorderIdPass(no.map((e: any) => e.id)); await reload(); };
+  const saveEdit = async (patch: any) => {
+    const id = editing.id;
+    const originalItem = entries.find((x: any) => x.id === id);
+    setEntries((prev: any[]) => prev.map((x: any) => x.id === id ? { ...x, ...patch, updatedAt: Date.now() } : x));
+    try { await updateIdPass(id, patch); }
+    catch (e: any) {
+      if (originalItem) setEntries((prev: any[]) => prev.map((x: any) => x.id === id ? originalItem : x));
+      throw e;
+    }
+  };
+  const reorder = async (no: any[]) => {
+    const originalOrder = no.map((e: any) => {
+      const orig = entries.find((x: any) => x.id === e.id);
+      return orig ? { id: orig.id, sortOrder: orig.sortOrder } : null;
+    }).filter(Boolean) as { id: string; sortOrder: number }[];
+
+    const reordered = no.map((e: any, i: number) => ({ ...e, sortOrder: i }));
+    const keptIds = new Set(reordered.map((e: any) => e.id));
+    setEntries((prev: any[]) => [...reordered, ...prev.filter((e: any) => !keptIds.has(e.id))]);
+    try { await reorderIdPass(no.map((e: any) => e.id)); }
+    catch (err: any) {
+      setEntries((prev: any[]) => prev.map((x: any) => {
+        const o = originalOrder.find(r => r.id === x.id);
+        return o ? { ...x, sortOrder: o.sortOrder } : x;
+      }).sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+  const bulkDelete = async () => {
+    const ok = await confirm({ title: `Delete ${selected.length} credentials?`, message: 'This cannot be undone.', confirmLabel: `Delete ${selected.length}`, danger: true });
+    if (!ok) return;
+    const toDelete = [...selected];
+    const deletedItems = entries.filter((x: any) => toDelete.includes(x.id));
+    setEntries((prev: any[]) => prev.filter(x => !toDelete.includes(x.id)));
+    setSelected([]); setSelectMode(false);
+    try { await bulkDeleteIdPass(toDelete); }
+    catch (err: any) {
+      setEntries((prev: any[]) => [...prev, ...deletedItems].sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+  const toggleSelect = (id: string) => setSelected(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+
   const renderItem = (e: any) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -515,32 +749,67 @@ function IdPassTab({ role, user, subs, entries, reload }: any) {
           <CopyButton value={e.password} />
         </div>
         {e.description && <div style={S.descBox}>{e.description}</div>}
-        {role === 'zeus' && <AssigneeList assignees={e.assignees || []} subs={subs} />}
+        {isAdmin && <AssigneeList assignees={e.assignees || []} subs={subs} />}
         <Timestamp createdAt={e.createdAt} updatedAt={e.updatedAt} />
       </div>
-      {role === 'zeus' && <Btn danger onClick={() => del(e)}>Delete</Btn>}
+      {isAdmin && !selectMode && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <Btn onClick={() => setEditing(e)} style={{ fontSize: '12px', padding: '5px 10px' }}>Edit</Btn>
+          <Btn danger onClick={() => del(e)}>Delete</Btn>
+        </div>
+      )}
     </div>
   );
+  const canReorder = isAdmin && !q.trim() && filterSub === 'all' && !selectMode;
   return (
     <div>
       {confirmEl}
-      {role === 'zeus' && <IdPassEntryForm subs={subs} onSubmit={add} />}
+      <EditIdPassModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
+      {isAdmin && <IdPassEntryForm subs={subs} onSubmit={add} />}
       {entries.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search credentials by game or username…" />}
-      {visible.length === 0 ? <div style={S.empty}>{q.trim() ? 'No matches found.' : 'No credentials yet.'}</div> : (
+      {isAdmin && subOnlyForFilter.length > 0 && entries.length > 0 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: C.textTertiary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '2px' }}>Filter:</span>
+          <button onClick={() => setFilterSub('all')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: filterSub === 'all' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: filterSub === 'all' ? C.accent : C.cardBg, color: filterSub === 'all' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: filterSub === 'all' ? 600 : 500 }}>All</button>
+          {subOnlyForFilter.map((s: any) => {
+            const on = filterSub === s.id;
+            return (
+              <button key={s.id} onClick={() => setFilterSub(s.id)} className="infos-pill"
+                style={{ padding: '5px 12px', fontSize: '12.5px', border: on ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: on ? C.accent : C.cardBg, color: on ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: on ? 600 : 500 }}>{s.username}</button>
+            );
+          })}
+        </div>
+      )}
+      <SelectionToolbar isAdmin={isAdmin} inSelectMode={selectMode}
+        onEnter={() => setSelectMode(true)} onExit={() => { setSelectMode(false); setSelected([]); }}
+        selectedCount={selected.length} onBulkDelete={bulkDelete}
+        onSelectAll={() => setSelected(visible.map((e: any) => e.id))}
+        onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
+      {visible.length === 0 ? <div style={S.empty}>{q.trim() || filterSub !== 'all' ? 'No matches found.' : 'No credentials yet.'}</div> : (
         <div>
-          <ReorderHint canReorder={role === 'zeus' && !q.trim()} />
-          <ReorderList items={visible} canReorder={role === 'zeus' && !q.trim()} onReorder={reorder} renderItem={renderItem} keyFn={(e: any) => e.id} />
+          <ReorderHint canReorder={canReorder} />
+          <ReorderList items={visible} canReorder={canReorder}
+            canSelect={selectMode} selectedIds={selected} onToggleSelect={toggleSelect}
+            onReorder={reorder} renderItem={renderItem} keyFn={(e: any) => e.id} />
         </div>
       )}
     </div>
   );
 }
+const IdPassTab = memo(IdPassTabInner);
 
-function NoticeTab({ role, user, subs, items, reload }: any) {
+// ---------------- Tab: Notice ----------------
+function NoticeTabInner({ user, subs, items, setItems, reload }: any) {
+  const isAdmin = isAdminRole(user.role);
   const [confirmEl, confirm] = useConfirm();
   const [q, setQ] = useState('');
+  const [editing, setEditing] = useState<any>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+
   const visible = useMemo(() => {
-    const base = role === 'zeus' ? items : items.filter((x: any) => isVisibleToSub(x.recipients, user.id));
+    const base = isAdmin ? items : items.filter((x: any) => isVisibleToSub(x.recipients, user.id));
     if (!q.trim()) return base;
     const s = q.toLowerCase();
     return base.filter((x: any) =>
@@ -548,26 +817,80 @@ function NoticeTab({ role, user, subs, items, reload }: any) {
       (x.body || '').toLowerCase().includes(s) ||
       (x.link || '').toLowerCase().includes(s)
     );
-  }, [role, items, user, q]);
+  }, [isAdmin, items, user, q]);
   const nextSortOrder = useMemo(() => (items.length ? Math.max(...items.map((x: any) => x.sortOrder || 0)) + 1 : 0), [items]);
+
   const add = async (vals: any) => {
-    await addNotice({
+    const newItem = {
       id: uid(), title: vals.title.trim(), body: vals.body.trim(),
       link: (vals.link || '').trim(), recipients: vals.assignees,
       createdAt: Date.now(), sortOrder: nextSortOrder,
-    });
-    await reload();
+    };
+    setItems((prev: any[]) => [...prev, newItem]);
+    try { await addNotice(newItem); }
+    catch (e: any) { setItems((prev: any[]) => prev.filter(x => x.id !== newItem.id)); throw e; }
   };
   const del = async (x: any) => {
     const ok = await confirm({ title: `Delete notice "${x.title}"?`, message: 'This cannot be undone.', confirmLabel: 'Delete', danger: true });
     if (!ok) return;
-    await deleteNotice(x.id); await reload();
+    const deletedItem = x;
+    setItems((prev: any[]) => prev.filter(y => y.id !== x.id));
+    try { await deleteNotice(x.id); }
+    catch (err: any) {
+      setItems((prev: any[]) => [...prev, deletedItem].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
   };
-  const reorder = async (no: any[]) => { await reorderNotices(no.map((x: any) => x.id)); await reload(); };
+  const saveEdit = async (patch: any) => {
+    const id = editing.id;
+    const originalItem = items.find((y: any) => y.id === id);
+    setItems((prev: any[]) => prev.map((y: any) => y.id === id ? { ...y, ...patch, updatedAt: Date.now() } : y));
+    try { await updateNotice(id, patch); }
+    catch (e: any) {
+      if (originalItem) setItems((prev: any[]) => prev.map((y: any) => y.id === id ? originalItem : y));
+      throw e;
+    }
+  };
+  const reorder = async (no: any[]) => {
+    const originalOrder = no.map((x: any) => {
+      const orig = items.find((y: any) => y.id === x.id);
+      return orig ? { id: orig.id, sortOrder: orig.sortOrder } : null;
+    }).filter(Boolean) as { id: string; sortOrder: number }[];
+
+    const reordered = no.map((x: any, i: number) => ({ ...x, sortOrder: i }));
+    const keptIds = new Set(reordered.map((x: any) => x.id));
+    setItems((prev: any[]) => [...reordered, ...prev.filter((x: any) => !keptIds.has(x.id))]);
+    try { await reorderNotices(no.map((x: any) => x.id)); }
+    catch (err: any) {
+      setItems((prev: any[]) => prev.map((y: any) => {
+        const o = originalOrder.find(r => r.id === y.id);
+        return o ? { ...y, sortOrder: o.sortOrder } : y;
+      }).sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+  const bulkDelete = async () => {
+    const ok = await confirm({ title: `Delete ${selected.length} notices?`, message: 'This cannot be undone.', confirmLabel: `Delete ${selected.length}`, danger: true });
+    if (!ok) return;
+    const toDelete = [...selected];
+    const deletedItems = items.filter((y: any) => toDelete.includes(y.id));
+    setItems((prev: any[]) => prev.filter(y => !toDelete.includes(y.id)));
+    setSelected([]); setSelectMode(false);
+    try { await bulkDeleteNotices(toDelete); }
+    catch (err: any) {
+      setItems((prev: any[]) => [...prev, ...deletedItems].sort((a: any, b: any) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+  const toggleSelect = (id: string) => setSelected(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
+  const isNewish = (createdAt: number) => (Date.now() - createdAt) < (24 * 60 * 60 * 1000);
   const renderItem = (x: any) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: '15px', letterSpacing: '-0.01em' }}>{x.title}</div>
+        <div style={{ fontWeight: 600, fontSize: '15px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          {x.title}
+          {isNewish(x.createdAt) && <span className="infos-new-badge" style={{ fontSize: '10px', padding: '2px 7px', background: C.accent, color: 'white', borderRadius: '10px', fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase' }}>New</span>}
+        </div>
         <div style={{ fontSize: '13.5px', marginTop: '8px', whiteSpace: 'pre-wrap', color: C.textPrimary, lineHeight: '1.5' }}>{x.body}</div>
         {x.link && (
           <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -575,58 +898,116 @@ function NoticeTab({ role, user, subs, items, reload }: any) {
             <CopyButton value={x.link} label="link" />
           </div>
         )}
-        {role === 'zeus' && <AssigneeList assignees={x.recipients || []} subs={subs} />}
+        {isAdmin && <AssigneeList assignees={x.recipients || []} subs={subs} />}
         <Timestamp createdAt={x.createdAt} updatedAt={x.updatedAt} />
       </div>
-      {role === 'zeus' && <Btn danger onClick={() => del(x)}>Delete</Btn>}
+      {isAdmin && !selectMode && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <Btn onClick={() => setEditing(x)} style={{ fontSize: '12px', padding: '5px 10px' }}>Edit</Btn>
+          <Btn danger onClick={() => del(x)}>Delete</Btn>
+        </div>
+      )}
     </div>
   );
+  const canReorder = isAdmin && !q.trim() && !selectMode;
   return (
     <div>
       {confirmEl}
-      {role === 'zeus' && (subs.length === 0
+      <EditNoticeModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
+      {isAdmin && (subs.filter((s: any) => s.role !== 'co').length === 0
         ? <div style={{ ...S.empty, marginBottom: '1.25rem' }}>Create sub-admins first to post notices.</div>
         : <NoticeEntryForm subs={subs} onSubmit={add} />)}
       {items.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search notices…" />}
-      {visible.length === 0 ? <div style={S.empty}>{q.trim() ? 'No matches found.' : role === 'zeus' ? 'No notices posted yet.' : 'No notices for you yet.'}</div> : (
+      <SelectionToolbar isAdmin={isAdmin} inSelectMode={selectMode}
+        onEnter={() => setSelectMode(true)} onExit={() => { setSelectMode(false); setSelected([]); }}
+        selectedCount={selected.length} onBulkDelete={bulkDelete}
+        onSelectAll={() => setSelected(visible.map((x: any) => x.id))}
+        onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
+      {visible.length === 0 ? <div style={S.empty}>{q.trim() ? 'No matches found.' : isAdmin ? 'No notices posted yet.' : 'No notices for you yet.'}</div> : (
         <div>
-          <ReorderHint canReorder={role === 'zeus' && !q.trim()} />
-          <ReorderList items={visible} canReorder={role === 'zeus' && !q.trim()} onReorder={reorder} renderItem={renderItem} keyFn={(x: any) => x.id} />
+          <ReorderHint canReorder={canReorder} />
+          <ReorderList items={visible} canReorder={canReorder}
+            canSelect={selectMode} selectedIds={selected} onToggleSelect={toggleSelect}
+            onReorder={reorder} renderItem={renderItem} keyFn={(x: any) => x.id} />
         </div>
       )}
     </div>
   );
 }
+const NoticeTab = memo(NoticeTabInner);
 
-function SubAdminsPanel({ subs, backend, games, idpass, notices, reload }: any) {
+// ---------------- Tab: Create Admin ----------------
+function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, notices, reload, reloadSubs }: any) {
   const [confirmEl, confirm] = useConfirm();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [role, setRole] = useState<'sub' | 'co'>('sub');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [managingSub, setManagingSub] = useState<any>(null);
+  const [editingSub, setEditingSub] = useState<any>(null);
+  const [showNewPass, setShowNewPass] = useState(false);
+  const [viewFilter, setViewFilter] = useState<'all' | 'sub' | 'co'>('all');
   const nextSortOrder = useMemo(() => (subs.length ? Math.max(...subs.map((s: any) => s.sortOrder || 0)) + 1 : 0), [subs]);
+
+  const isZeusUser = isZeus(user.role);
+  // Co-admin can only create sub-admins, not other co-admins
+  const canSelectRole = isZeusUser;
 
   const add = async () => {
     setError('');
     if (!username.trim() || !password.trim()) return setError('Username and password required');
-    const zeus = await loadZeus();
-    if (username.trim() === zeus.username) return setError('That username is reserved');
-    if (subs.some((s: any) => s.username === username.trim())) return setError('Username already taken');
-    setBusy(true);
     try {
-      await addSub({ id: uid(), username: username.trim(), password, createdAt: Date.now(), sortOrder: nextSortOrder });
-      await reload();
-      setUsername(''); setPassword('');
-    } catch (e: any) { setError(e?.message || 'Could not save'); } finally { setBusy(false); }
-  };
-  const remove = async (s: any) => {
-    const ok = await confirm({ title: `Remove sub-admin "${s.username}"?`, message: 'They will no longer be able to sign in. Content they were assigned to will still exist.', confirmLabel: 'Remove', danger: true });
-    if (!ok) return;
-    await deleteSub(s.id); await reload();
+      const zeus = await loadZeus();
+      if (username.trim() === zeus.username) return setError('That username is reserved for the main admin');
+      if (subs.some((s: any) => s.username === username.trim())) return setError('That username is already taken');
+      const finalRole = canSelectRole ? role : 'sub';
+      setBusy(true);
+      const newSub = { id: uid(), username: username.trim(), password, role: finalRole, createdAt: Date.now(), sortOrder: nextSortOrder };
+      // Optimistic: add to local state immediately
+      setSubs((prev: any[]) => [...prev, newSub]);
+      try {
+        await addSub(newSub);
+        setUsername(''); setPassword(''); setShowNewPass(false); setRole('sub');
+      } catch (dbErr: any) {
+        // Revert on failure
+        setSubs((prev: any[]) => prev.filter(s => s.id !== newSub.id));
+        throw dbErr;
+      }
+    } catch (e: any) { setError(friendlyError(e)); } finally { setBusy(false); }
   };
 
-  // Build bulk entries for the modal
+  const remove = async (s: any) => {
+    if (s.role === 'co' && !isZeusUser) {
+      alert('Only Zeus can remove co-admins.');
+      return;
+    }
+    const label = s.role === 'co' ? 'co-admin' : 'sub-admin';
+    const ok = await confirm({ title: `Remove ${label} "${s.username}"?`, message: `They will no longer be able to sign in. Content they were assigned to will still exist.`, confirmLabel: 'Remove', danger: true });
+    if (!ok) return;
+    const deletedItem = s;
+    setSubs((prev: any[]) => prev.filter(x => x.id !== s.id));
+    try { await deleteSub(s.id); }
+    catch (err: any) {
+      setSubs((prev: any[]) => [...prev, deletedItem].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+      alert(friendlyError(err));
+    }
+  };
+
+  const saveEditSub = async (patch: { username: string; password: string }) => {
+    if (editingSub.role === 'co' && !isZeusUser) {
+      throw new Error('Only Zeus can edit co-admins.');
+    }
+    const id = editingSub.id;
+    const originalItem = subs.find((x: any) => x.id === id);
+    setSubs((prev: any[]) => prev.map((x: any) => x.id === id ? { ...x, ...patch, updatedAt: Date.now() } : x));
+    try { await updateSub(id, patch); }
+    catch (e: any) {
+      if (originalItem) setSubs((prev: any[]) => prev.map((x: any) => x.id === id ? originalItem : x));
+      throw e;
+    }
+  };
+
   const bulkEntries: BulkEntry[] = useMemo(() => {
     if (!managingSub) return [];
     return [
@@ -644,7 +1025,6 @@ function SubAdminsPanel({ subs, backend, games, idpass, notices, reload }: any) 
       let next: string[];
       if (grant) next = Array.from(new Set([...currentAssignees, subId]));
       else next = currentAssignees.filter(x => x !== subId);
-
       if (entry.table === 'backend') await updateGameAssignees('backend_entries', entry.id, next);
       else if (entry.table === 'games') await updateGameAssignees('game_entries', entry.id, next);
       else if (entry.table === 'idpass') await updateIdPassAssignees(entry.id, next);
@@ -653,51 +1033,124 @@ function SubAdminsPanel({ subs, backend, games, idpass, notices, reload }: any) 
     await reload();
   };
 
+  const existingUsernames = subs.map((s: any) => ({ id: s.id, username: s.username }));
+  const filteredSubs = useMemo(() => {
+    if (viewFilter === 'all') return subs;
+    return subs.filter((s: any) => (s.role || 'sub') === viewFilter);
+  }, [subs, viewFilter]);
+
+  const coCount = subs.filter((s: any) => s.role === 'co').length;
+  const subCount = subs.filter((s: any) => (s.role || 'sub') === 'sub').length;
+
   return (
     <div>
       {confirmEl}
-      <BulkAssignModal
-        open={!!managingSub}
-        subAdmin={managingSub}
-        entries={bulkEntries}
-        onClose={() => setManagingSub(null)}
-        onSave={saveBulk}
-      />
+      <BulkAssignModal open={!!managingSub} subAdmin={managingSub} entries={bulkEntries}
+        onClose={() => setManagingSub(null)} onSave={saveBulk} />
+      <EditSubAdminModal open={!!editingSub} sub={editingSub} existingUsernames={existingUsernames}
+        onClose={() => setEditingSub(null)} onSave={saveEditSub} />
+
+      {/* Create form */}
       <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
         <div className="infos-grid2" style={S.grid2}>
-          <div><label style={S.label}>Username</label><TextInput value={username} onChange={(e: any) => setUsername(e.target.value)} placeholder="new_sub_admin" /></div>
-          <div><label style={S.label}>Password</label><TextInput value={password} onChange={(e: any) => setPassword(e.target.value)} placeholder="Set a password" /></div>
+          <div><label style={S.label}>Username</label><TextInput value={username} onChange={(e: any) => setUsername(e.target.value)} placeholder="new_admin_username" /></div>
+          <div>
+            <label style={S.label}>Password</label>
+            <div style={{ position: 'relative' }}>
+              <TextInput type={showNewPass ? 'text' : 'password'} value={password} onChange={(e: any) => setPassword(e.target.value)} placeholder="Set a password" style={{ paddingRight: '60px' }} />
+              <button type="button" onClick={() => setShowNewPass(!showNewPass)}
+                style={{ position: 'absolute', right: '6px', top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', fontSize: '11.5px', color: C.textSecondary, cursor: 'pointer', padding: '4px 8px', fontWeight: 500 }}>
+                {showNewPass ? 'Hide' : 'Show'}
+              </button>
+            </div>
+          </div>
         </div>
+        {/* Role selector — only Zeus can pick */}
+        {canSelectRole && (
+          <div style={{ marginTop: '12px' }}>
+            <label style={S.label}>Admin role</label>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <button type="button" onClick={() => setRole('sub')}
+                style={{ padding: '10px 14px', fontSize: '13px', border: `1px solid ${role === 'sub' ? C.accent : C.borderStrong}`, background: role === 'sub' ? C.accentSoft : C.cardBg, color: role === 'sub' ? C.accentText : C.textPrimary, borderRadius: '8px', cursor: 'pointer', fontWeight: role === 'sub' ? 600 : 500, textAlign: 'left', flex: 1, minWidth: '180px' }}>
+                <div style={{ fontWeight: 600, marginBottom: '2px' }}>Sub-admin</div>
+                <div style={{ fontSize: '11.5px', color: C.textSecondary, fontWeight: 500 }}>Sees only what&apos;s assigned to them. Cannot create or edit.</div>
+              </button>
+              <button type="button" onClick={() => setRole('co')}
+                style={{ padding: '10px 14px', fontSize: '13px', border: `1px solid ${role === 'co' ? C.accent : C.borderStrong}`, background: role === 'co' ? C.accentSoft : C.cardBg, color: role === 'co' ? C.accentText : C.textPrimary, borderRadius: '8px', cursor: 'pointer', fontWeight: role === 'co' ? 600 : 500, textAlign: 'left', flex: 1, minWidth: '180px' }}>
+                <div style={{ fontWeight: 600, marginBottom: '2px' }}>Co-admin</div>
+                <div style={{ fontSize: '11.5px', color: C.textSecondary, fontWeight: 500 }}>Zeus-level access. Can create sub-admins and edit content. Only Zeus can remove them.</div>
+              </button>
+            </div>
+          </div>
+        )}
+        {!canSelectRole && (
+          <div style={{ fontSize: '12.5px', color: C.textTertiary, marginTop: '10px', fontStyle: 'italic' }}>
+            Note: As a co-admin, you can only create sub-admins. Only Zeus can create other co-admins.
+          </div>
+        )}
         {error && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{error}</div>}
-        <div style={{ marginTop: '14px', textAlign: 'right' }}><Btn primary onClick={add} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Create sub-admin'}</Btn></div>
+        <div style={{ marginTop: '14px', textAlign: 'right' }}>
+          <Btn primary onClick={add} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>
+            {busy ? 'Saving…' : `Create ${canSelectRole && role === 'co' ? 'co-admin' : 'sub-admin'}`}
+          </Btn>
+        </div>
       </div>
-      {subs.length === 0 ? <div style={S.empty}>No sub-admins yet.</div> : (
+
+      {/* Filter pills */}
+      {subs.length > 0 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: C.textTertiary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '2px' }}>View:</span>
+          <button onClick={() => setViewFilter('all')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'all' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'all' ? C.accent : C.cardBg, color: viewFilter === 'all' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'all' ? 600 : 500 }}>All ({subs.length})</button>
+          <button onClick={() => setViewFilter('sub')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'sub' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'sub' ? C.accent : C.cardBg, color: viewFilter === 'sub' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'sub' ? 600 : 500 }}>Sub-admins ({subCount})</button>
+          <button onClick={() => setViewFilter('co')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: viewFilter === 'co' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: viewFilter === 'co' ? C.accent : C.cardBg, color: viewFilter === 'co' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: viewFilter === 'co' ? 600 : 500 }}>Co-admins ({coCount})</button>
+        </div>
+      )}
+
+      {filteredSubs.length === 0 ? <div style={S.empty}>{viewFilter === 'all' ? 'No admins yet.' : viewFilter === 'co' ? 'No co-admins yet.' : 'No sub-admins yet.'}</div> : (
         <div>
-          {subs.map((s: any) => (
-            <div key={s.id} style={S.item}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '8px', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <span style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#888780', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>{s.username.charAt(0).toUpperCase()}</span>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: '14px', letterSpacing: '-0.01em' }}>{s.username}</div>
-                    <div style={{ fontSize: '12px', color: C.textSecondary, fontFamily: 'ui-monospace, monospace', marginTop: '3px' }}>password: {s.password}</div>
+          {filteredSubs.map((s: any) => {
+            const sRole = s.role || 'sub';
+            const isCo = sRole === 'co';
+            const canManage = isZeusUser || !isCo; // co-admin can't edit/delete other co-admins
+            const avatarColor = isCo ? '#e17b4a' : '#888780';
+            return (
+              <div key={s.id} style={S.item}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', gap: '8px', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <span style={{ width: '36px', height: '36px', borderRadius: '50%', background: avatarColor, color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 600 }}>{s.username.charAt(0).toUpperCase()}</span>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '14px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {s.username}
+                        {isCo && <span style={{ fontSize: '10px', padding: '2px 8px', background: 'rgba(225, 123, 74, 0.18)', color: '#e17b4a', borderRadius: '10px', fontWeight: 700, letterSpacing: '0.03em', textTransform: 'uppercase' }}>CO-ADMIN</span>}
+                      </div>
+                      <div style={{ fontSize: '12px', color: C.textSecondary, fontFamily: 'ui-monospace, monospace', marginTop: '3px' }}>password: {s.password}</div>
+                      {s.createdAt && <div style={{ fontSize: '11px', color: C.textTertiary, marginTop: '3px', fontWeight: 500 }} title={fullDateTime(s.createdAt)}>Added {timeAgo(s.createdAt)}</div>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {canManage && <Btn onClick={() => setEditingSub(s)} style={{ fontSize: '12px', padding: '5px 10px' }}>Edit</Btn>}
+                    {!isCo && <Btn onClick={() => setManagingSub(s)}>Manage access</Btn>}
+                    {canManage && <Btn danger onClick={() => remove(s)}>Remove</Btn>}
+                    {!canManage && <span style={{ fontSize: '11px', color: C.textTertiary, fontStyle: 'italic' }}>Zeus only</span>}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <Btn onClick={() => setManagingSub(s)}>Manage access</Btn>
-                  <Btn danger onClick={() => remove(s)}>Remove</Btn>
-                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
+const CreateAdminPanel = memo(CreateAdminPanelInner);
 
-function SettingsPanel({ onForceLogout }: any) {
-  const [current, setCurrent] = useState<any>(null);
+// ---------------- Settings modal (Zeus: change creds + backup. Co-admin: change own password + backup) ----------------
+function SettingsModal({ open, onClose, user, onForceLogout }: any) {
+  const isZeusUser = isZeus(user.role);
+  const [currentZeus, setCurrentZeus] = useState<any>(null);
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPass, setConfirmPass] = useState('');
@@ -709,9 +1162,32 @@ function SettingsPanel({ onForceLogout }: any) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [confirmEl, confirm] = useConfirm();
 
-  useEffect(() => { loadZeus().then(c => { setCurrent(c); setNewUsername(c.username); }); }, []);
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    if (isZeusUser) {
+      loadZeus().then(c => {
+        if (!alive) return;
+        setCurrentZeus(c);
+        setNewUsername(c.username);
+      }).catch(() => {
+        if (alive) setCurrentZeus(DEFAULT_ZEUS);
+      });
+    } else {
+      setCurrentZeus({ username: user.username });
+    }
+    setNewPassword(''); setConfirmPass(''); setMsg(''); setErr(''); setImportStatus('');
+    return () => { alive = false; };
+  }, [open, isZeusUser, user.username]);
 
-  const save = async () => {
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
+  const saveZeusCreds = async () => {
     setMsg(''); setErr('');
     if (!newUsername.trim()) return setErr('Username cannot be empty');
     if (!newPassword) return setErr('Enter a new password');
@@ -721,8 +1197,21 @@ function SettingsPanel({ onForceLogout }: any) {
     try {
       await saveZeus({ username: newUsername.trim(), password: newPassword });
       setMsg('Credentials updated. Logging you out…');
-      setTimeout(() => onForceLogout(), 1500);
-    } catch (e: any) { setErr(e?.message || 'Could not save'); } finally { setBusy(false); }
+      setTimeout(() => { onClose(); onForceLogout(); }, 1200);
+    } catch (e: any) { setErr(friendlyError(e)); } finally { setBusy(false); }
+  };
+
+  const saveCoPassword = async () => {
+    setMsg(''); setErr('');
+    if (!newPassword) return setErr('Enter a new password');
+    if (newPassword.length < 4) return setErr('Password must be at least 4 characters');
+    if (newPassword !== confirmPass) return setErr('Passwords do not match');
+    setBusy(true);
+    try {
+      await updateSub(user.id, { password: newPassword });
+      setMsg('Password updated. Logging you out…');
+      setTimeout(() => { onClose(); onForceLogout(); }, 1200);
+    } catch (e: any) { setErr(friendlyError(e)); } finally { setBusy(false); }
   };
 
   const doExportAll = async () => {
@@ -736,7 +1225,8 @@ function SettingsPanel({ onForceLogout }: any) {
       a.download = `infos-backup-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } finally { setExporting(false); }
+    } catch (e: any) { alert(friendlyError(e)); }
+    finally { setExporting(false); }
   };
 
   const doImport = async (ev: React.ChangeEvent<HTMLInputElement>) => {
@@ -751,16 +1241,15 @@ function SettingsPanel({ onForceLogout }: any) {
         return;
       }
       const ok = await confirm({
-        title: 'Import and replace data?',
-        message: `This will ADD entries from the backup (existing entries with same IDs will be overwritten). Your current Zeus login will NOT be changed. Items: ${data.sub_admins?.length || 0} sub-admins, ${data.backend_entries?.length || 0} backend, ${data.game_entries?.length || 0} games, ${data.idpass_entries?.length || 0} credentials, ${data.notices?.length || 0} notices.`,
+        title: 'Import and merge data?',
+        message: `This will ADD entries from the backup. Existing entries with the same IDs will be overwritten. Zeus credentials will NOT be changed. Subs: ${data.sub_admins?.length || 0}, backend: ${data.backend_entries?.length || 0}, games: ${data.game_entries?.length || 0}, credentials: ${data.idpass_entries?.length || 0}, notices: ${data.notices?.length || 0}.`,
         confirmLabel: 'Import',
       });
       if (!ok) { setImportStatus(''); ev.target.value = ''; return; }
-
       setImportStatus('Importing…');
-      // Map app shape back to db shape
       if (data.sub_admins?.length) await bulkInsert('sub_admins', data.sub_admins.map((s: any) => ({
         id: s.id, username: s.username, password: s.password,
+        role: s.role || 'sub',
         created_at: s.createdAt, sort_order: s.sortOrder ?? 0,
       })));
       if (data.backend_entries?.length) await bulkInsert('backend_entries', data.backend_entries.map((e: any) => ({
@@ -782,105 +1271,198 @@ function SettingsPanel({ onForceLogout }: any) {
         id: n.id, title: n.title, body: n.body, link: n.link || '',
         recipients: n.recipients || [], created_at: n.createdAt, sort_order: n.sortOrder ?? 0,
       })));
-      setImportStatus('✓ Import complete. Data will appear in the tabs momentarily.');
-    } catch (e: any) {
-      setImportStatus('Import failed: ' + (e?.message || 'invalid file'));
-    }
+      setImportStatus('✓ Import complete. Refresh the page to see imported data.');
+    } catch (e: any) { setImportStatus('Import failed: ' + friendlyError(e)); }
     ev.target.value = '';
   };
 
-  if (!current) return <div style={S.empty}>Loading…</div>;
-  return (
-    <div>
-      {confirmEl}
-      <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
-        <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Change admin credentials</div>
-        <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>Current username: <span style={{ fontFamily: 'ui-monospace, monospace', color: C.textPrimary, fontWeight: 500 }}>{current.username}</span></div>
-        <div style={{ marginBottom: '12px' }}><label style={S.label}>New username</label><TextInput value={newUsername} onChange={(e: any) => setNewUsername(e.target.value)} /></div>
-        <div style={{ marginBottom: '12px' }}><label style={S.label}>New password</label><TextInput type="password" value={newPassword} onChange={(e: any) => setNewPassword(e.target.value)} /></div>
-        <div style={{ marginBottom: '12px' }}><label style={S.label}>Confirm new password</label><TextInput type="password" value={confirmPass} onChange={(e: any) => setConfirmPass(e.target.value)} /></div>
-        {err && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
-        {msg && <div style={{ fontSize: '13px', color: C.success, marginBottom: '10px', padding: '8px 12px', background: C.successSoft, borderRadius: '6px', fontWeight: 500 }}>{msg}</div>}
-        <div style={{ textAlign: 'right' }}><Btn primary onClick={save} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Save changes'}</Btn></div>
-      </div>
+  if (!open) return null;
 
-      <div style={S.softCard}>
-        <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Backup &amp; restore</div>
-        <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>Export all data as a JSON file, or restore from a previous backup.</div>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
-          <Btn onClick={() => fileRef.current?.click()}>↑ Import from backup</Btn>
-          <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} style={{ display: 'none' }} />
+  return (
+    <div className="infos-modal-backdrop" onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div className="infos-modal" onClick={(e) => e.stopPropagation()}
+        style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', maxWidth: '520px', width: '100%', maxHeight: '90vh', boxShadow: 'var(--shadow-pop)', display: 'flex', flexDirection: 'column' }}>
+        {confirmEl}
+        <div style={{ padding: '18px 20px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>Settings</div>
+          <button onClick={onClose} type="button" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', color: C.textTertiary, lineHeight: 1, padding: '4px 8px', borderRadius: '4px' }}>×</button>
         </div>
-        {importStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{importStatus}</div>}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
+          {/* Credentials section */}
+          <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>
+              {isZeusUser ? 'Change admin credentials' : 'Change your password'}
+            </div>
+            {currentZeus && (
+              <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>
+                {isZeusUser ? 'Current username: ' : 'Signed in as: '}
+                <span style={{ fontFamily: 'ui-monospace, monospace', color: C.textPrimary, fontWeight: 500 }}>{currentZeus.username}</span>
+              </div>
+            )}
+            {isZeusUser && (
+              <div style={{ marginBottom: '12px' }}><label style={S.label}>New username</label><TextInput value={newUsername} onChange={(e: any) => setNewUsername(e.target.value)} /></div>
+            )}
+            <div style={{ marginBottom: '12px' }}><label style={S.label}>New password</label><TextInput type="password" value={newPassword} onChange={(e: any) => setNewPassword(e.target.value)} /></div>
+            <div style={{ marginBottom: '12px' }}><label style={S.label}>Confirm new password</label><TextInput type="password" value={confirmPass} onChange={(e: any) => setConfirmPass(e.target.value)} /></div>
+            {err && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+            {msg && <div style={{ fontSize: '13px', color: C.success, marginBottom: '10px', padding: '8px 12px', background: C.successSoft, borderRadius: '6px', fontWeight: 500 }}>{msg}</div>}
+            <div style={{ textAlign: 'right' }}>
+              <Btn primary onClick={isZeusUser ? saveZeusCreds : saveCoPassword} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Save changes'}</Btn>
+            </div>
+          </div>
+
+          {/* Backup & restore */}
+          <div style={S.softCard}>
+            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Backup &amp; restore</div>
+            <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>Export all data as a JSON file, or restore from a previous backup.</div>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
+              <Btn onClick={() => fileRef.current?.click()}>↑ Import from backup</Btn>
+              <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} style={{ display: 'none' }} />
+            </div>
+            {importStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{importStatus}</div>}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
+// ---------------- Portal ----------------
 function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, onSignOutAll, theme, setTheme }: any) {
-  const [tab, setTab] = useState('notice');
+  const isAdmin = isAdminRole(user.role);
+  const [aboutOpen, setAboutOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const getInitialTab = () => {
+    if (typeof window === 'undefined') return 'notice';
+    try {
+      const hash = window.location.hash.replace('#', '');
+      const valid = ['notice', 'backend', 'games', 'idpass', 'admins'];
+      if (valid.includes(hash)) return hash;
+      const stored = window.localStorage.getItem('infos:active_tab');
+      if (stored && valid.includes(stored)) return stored;
+    } catch {}
+    return 'notice';
+  };
+  const [tab, setTabState] = useState<string>(getInitialTab);
+  const setTab = (t: string) => {
+    setTabState(t);
+    try {
+      window.localStorage.setItem('infos:active_tab', t);
+      window.history.replaceState(null, '', `#${t}`);
+    } catch {}
+  };
+
   const [subs, setSubs] = useState<any[]>([]);
   const [backend, setBackend] = useState<any[]>([]);
   const [games, setGames] = useState<any[]>([]);
   const [idpass, setIdpass] = useState<any[]>([]);
   const [notices, setNotices] = useState<any[]>([]);
+  const [aboutContent, setAboutContent] = useState<AboutContent>(DEFAULT_ABOUT);
   const [loaded, setLoaded] = useState(false);
 
+  // Per-table reloaders — used both for initial load and smart realtime updates
+  const reloaders = useMemo(() => ({
+    sub_admins: async () => { try { setSubs(await loadSubs()); } catch (e) { console.error(e); } },
+    backend_entries: async () => { try { setBackend(await loadBackend()); } catch (e) { console.error(e); } },
+    game_entries: async () => { try { setGames(await loadGames()); } catch (e) { console.error(e); } },
+    idpass_entries: async () => { try { setIdpass(await loadIdPass()); } catch (e) { console.error(e); } },
+    notices: async () => { try { setNotices(await loadNotices()); } catch (e) { console.error(e); } },
+    about_content: async () => { try { setAboutContent(await loadAbout()); } catch (e) { console.error(e); } },
+  }), []);
+
+  // Full reload (used after bulk imports)
   const reloadAll = useCallback(async () => {
-    const [s, b, g, i, n] = await Promise.all([loadSubs(), loadBackend(), loadGames(), loadIdPass(), loadNotices()]);
-    setSubs(s); setBackend(b); setGames(g); setIdpass(i); setNotices(n);
-  }, []);
+    await Promise.all(Object.values(reloaders).map(fn => fn()));
+  }, [reloaders]);
+
+  // Debounced realtime handler — coalesces multiple rapid events on the same table
+  const debounceTimers = useRef<Record<string, any>>({});
+  const reloadTable = useCallback((table: string) => {
+    const fn = (reloaders as any)[table];
+    if (!fn) return;
+    // Debounce 80ms to coalesce rapid bulk operations
+    clearTimeout(debounceTimers.current[table]);
+    debounceTimers.current[table] = setTimeout(() => fn(), 80);
+  }, [reloaders]);
 
   useEffect(() => {
     let alive = true;
+    const timersRef = debounceTimers.current;
     (async () => {
-      try { await reloadAll(); } catch (err) { console.error('Initial load failed', err); }
+      await reloadAll();
       if (alive) setLoaded(true);
     })();
     const unsub = subscribeAll(
-      ['sub_admins', 'backend_entries', 'game_entries', 'idpass_entries', 'notices'],
-      () => { if (alive) reloadAll().catch(() => {}); }
+      ['sub_admins', 'backend_entries', 'game_entries', 'idpass_entries', 'notices', 'about_content'],
+      (table: string) => { if (alive) reloadTable(table); }
     );
-    return () => { alive = false; unsub(); };
-  }, [activeKey, reloadAll]);
+    return () => {
+      alive = false;
+      unsub();
+      // Clear any pending debounce timers (use captured ref to satisfy lint)
+      Object.values(timersRef).forEach(t => clearTimeout(t));
+    };
+  }, [activeKey, reloadAll, reloadTable]);
+
+  // If on admins tab but not admin, fallback
+  useEffect(() => {
+    if (!isAdmin && tab === 'admins') setTab('notice');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
 
   const tabs = [
     { id: 'notice', label: 'Notice' },
     { id: 'backend', label: 'Backend' },
     { id: 'games', label: 'Games' },
     { id: 'idpass', label: 'Id & Pass' },
-    ...(user.role === 'zeus' ? [{ id: 'subs', label: 'Sub-admins' }, { id: 'settings', label: 'Settings' }] : []),
+    ...(isAdmin ? [{ id: 'admins', label: 'Create Admin' }] : []),
   ];
 
   return (
     <div style={S.shell}>
+      <AboutModal
+        open={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        content={aboutContent}
+        canEdit={user.role === 'zeus'}
+        onSaved={() => { reloaders.about_content(); setAboutOpen(false); }}
+      />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} user={user} onForceLogout={onSignOutAll} />
       <div style={S.card}>
         <div style={S.headerBar}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
             <Image src="/logo.png" alt="" width={38} height={38} style={{ flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
               <div style={S.brand}>Infos</div>
-              <div style={S.sub}>{user.role === 'zeus' ? `${user.username} — main admin` : `${user.username} — sub-admin`}</div>
+              <div style={S.sub}>
+                {user.username} — {user.role === 'zeus' ? 'main admin' : user.role === 'co' ? 'co-admin' : 'sub-admin'}
+              </div>
             </div>
           </div>
-          <AccountSwitcher accounts={accounts} activeKey={activeKey} onSwitch={onSwitch} onAddAccount={onAddAccount} onSignOut={onSignOut} onSignOutAll={onSignOutAll} theme={theme} setTheme={setTheme} />
+          <AccountSwitcher accounts={accounts} activeKey={activeKey} user={user}
+            onSwitch={onSwitch} onAddAccount={onAddAccount} onSignOut={onSignOut} onSignOutAll={onSignOutAll}
+            onOpenAbout={() => setAboutOpen(true)}
+            onOpenSettings={() => setSettingsOpen(true)}
+            theme={theme} setTheme={setTheme} />
         </div>
         <div className="infos-tabs" style={S.tabs}>
           {tabs.map((t) => <button key={t.id} onClick={() => setTab(t.id)} className="infos-tab" style={tabStyle(tab === t.id)}>{t.label}</button>)}
         </div>
         {!loaded ? <div style={S.empty}>Loading…</div> :
-          tab === 'notice' ? <NoticeTab role={user.role} user={user} subs={subs} items={notices} reload={reloadAll} /> :
-          tab === 'backend' ? <GameListTab table="backend_entries" role={user.role} user={user} subs={subs} entries={backend} reload={reloadAll} emptyMsg="No backend entries yet." /> :
-          tab === 'games' ? <GameListTab table="game_entries" role={user.role} user={user} subs={subs} entries={games} reload={reloadAll} emptyMsg="No games yet." /> :
-          tab === 'idpass' ? <IdPassTab role={user.role} user={user} subs={subs} entries={idpass} reload={reloadAll} /> :
-          tab === 'subs' ? <SubAdminsPanel subs={subs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} /> :
-          tab === 'settings' ? <SettingsPanel onForceLogout={onSignOutAll} /> : null}
+          tab === 'notice' ? <NoticeTab user={user} subs={subs} items={notices} setItems={setNotices} reload={reloaders.notices} /> :
+          tab === 'backend' ? <GameListTab table="backend_entries" user={user} subs={subs} entries={backend} setEntries={setBackend} reload={reloaders.backend_entries} emptyMsg="No backend entries yet." /> :
+          tab === 'games' ? <GameListTab table="game_entries" user={user} subs={subs} entries={games} setEntries={setGames} reload={reloaders.game_entries} emptyMsg="No games yet." /> :
+          tab === 'idpass' ? <IdPassTab user={user} subs={subs} entries={idpass} setEntries={setIdpass} reload={reloaders.idpass_entries} /> :
+          tab === 'admins' && isAdmin ? <CreateAdminPanel user={user} subs={subs} setSubs={setSubs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} reloadSubs={reloaders.sub_admins} /> : null}
       </div>
     </div>
   );
 }
 
+// ---------------- App root ----------------
 export default function InfosApp() {
   const [hydrated, setHydrated] = useState(false);
   const [showOpenSplash, setShowOpenSplash] = useState(true);
@@ -891,14 +1473,9 @@ export default function InfosApp() {
   const [envMissing, setEnvMissing] = useState(false);
 
   useEffect(() => {
-    // Check Supabase env vars are set (these are bundled at build time in Next.js)
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!url || !key) {
-      setEnvMissing(true);
-      setHydrated(true);
-      return;
-    }
+    if (!url || !key) { setEnvMissing(true); setHydrated(true); return; }
     const accs = loadSession<any[]>('ACCOUNTS', []);
     const act = loadSession<string | null>('ACTIVE', null);
     setAccounts(accs);
@@ -932,7 +1509,7 @@ export default function InfosApp() {
           <div style={{ fontSize: '14px', color: C.textSecondary, marginBottom: '16px', lineHeight: 1.6 }}>
             The app can&apos;t connect to the database because Supabase environment variables aren&apos;t set.
           </div>
-          <div style={{ fontSize: '13px', color: C.textSecondary, background: C.softBg, padding: '12px 14px', borderRadius: '8px', marginBottom: '16px', lineHeight: 1.6 }}>
+          <div style={{ fontSize: '13px', color: C.textSecondary, background: C.softBg, padding: '12px 14px', borderRadius: '8px', lineHeight: 1.6 }}>
             <strong>If you&apos;re the admin:</strong> in Vercel, go to Project → Settings → Environment Variables and add:
             <ul style={{ margin: '8px 0 0', paddingLeft: '20px' }}>
               <li><code style={{ fontFamily: 'ui-monospace, monospace', fontSize: '12px' }}>NEXT_PUBLIC_SUPABASE_URL</code></li>
@@ -944,7 +1521,7 @@ export default function InfosApp() {
       </div>
     );
   }
-  if (showOpenSplash) return <Splash ms={3000} subtitle="Loading…" onDone={() => setShowOpenSplash(false)} />;
+  if (showOpenSplash) return <Splash ms={1200} subtitle="Loading…" onDone={() => setShowOpenSplash(false)} />;
   if (accounts.length === 0) return <LoginForm onLogin={addAccount} />;
   if (addingAccount) return <LoginForm onLogin={addAccount} onCancel={() => setAddingAccount(false)} cancelLabel="Back" subtitle="Add another account" />;
   const activeUser = accounts.find((a) => accKey(a) === activeKey);

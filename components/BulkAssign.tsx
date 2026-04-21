@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { isAssignedAll } from '@/lib/storage';
+import { isAssignedAll, friendlyError } from '@/lib/storage';
 import { C, S } from './styles';
 
 // ---------------- Bulk Assign Modal ----------------
@@ -71,9 +71,9 @@ export function BulkAssignModal({
       await onSave(changes);
       setPending({});
       onClose();
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert('Could not save changes. See console for details.');
+      alert(friendlyError(e, 'Could not save changes. Please try again.'));
     } finally { setBusy(false); }
   };
 
@@ -95,7 +95,7 @@ export function BulkAssignModal({
         style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', padding: 0, maxWidth: '560px', width: '100%', maxHeight: '85vh', boxShadow: 'var(--shadow-pop)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '18px 20px 14px', borderBottom: `1px solid ${C.border}` }}>
           <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>Manage access for {subAdmin.username}</div>
-          <div style={{ fontSize: '13px', color: C.textSecondary, marginTop: '4px' }}>Toggle items to grant or revoke access. "All sub-admins" entries are always on.</div>
+          <div style={{ fontSize: '13px', color: C.textSecondary, marginTop: '4px' }}>Toggle items to grant or revoke access. &ldquo;All sub-admins&rdquo; entries are always on.</div>
           <input type="text" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter items…"
             className="infos-input"
             style={{ ...S.input, marginTop: '12px' }} />

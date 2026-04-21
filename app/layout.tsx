@@ -29,11 +29,15 @@ export const viewport: Viewport = {
 // Inline script runs before React hydration to prevent theme flash
 const themeScript = `(function(){try{var t=localStorage.getItem('infos:theme');if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})()`;
 
+// Service worker registration — registers after page load so it doesn't delay first paint
+const swScript = `if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('/sw.js').catch(function(){});});}`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: swScript }} />
       </head>
       <body>{children}</body>
     </html>

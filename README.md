@@ -1,63 +1,76 @@
-# Infos
+# Infos (v18.1)
 
-Admin portal app with main admin (Zeus), sub-admin accounts, and tabs for Notice, Backend, Games, and Id & Pass credentials.
+Admin portal — Zeus (main admin), co-admins, and sub-admins. Notice / Backend / Games / Id & Pass tabs. Backed by Supabase with real-time sync. Progressive Web App installable on mobile + desktop.
 
-Backed by **Supabase** — all data syncs across devices in real-time.
+## What's new in v18.1
 
-## Features
+### 📱 PWA (Progressive Web App) improvements
+- **Service worker** registered at `/sw.js`. Caches app shell (HTML, JS, CSS, icons, logo, QR image) for near-instant subsequent loads. Supabase API calls are **never** cached — data stays live.
+- **App shell works offline.** If connection drops, the UI still loads from cache. Attempted actions show friendly errors until back online.
+- **Manifest additions for better PWA audit score:**
+  - `id` field — lets the OS identify the app even if URL changes
+  - `orientation: portrait` — locks to portrait on phones
+  - 2 screenshots (mobile + desktop) — shown in install prompts and app stores
+  - `categories` — helps categorize if listed in stores
+  - Fixed maskable icon setup (separate entries for `any` and `maskable` purpose)
 
-- **Unified login** — auto-detects Zeus vs sub-admin
-- **Default Zeus credentials**: `Zeus` / `Hello@123` (change in Settings after first login)
-- **Multi-account sign-in** — stay logged into several accounts, switch via the avatar dropdown
-- **Dark mode** — auto-match system, or manually toggle light/dark from the avatar menu
-- **Search bar** on every tab — filter instantly by name, link, or description
-- **Notice tab** — post announcements with title, message, and optional link
-- **Assignments** — assign entries to specific sub-admins or toggle "All sub-admins"
-- **Bulk manage access** — per sub-admin, check/uncheck which entries they can see from one modal
-- **Description / note field** on every entry
-- **Drag OR arrow buttons (▲▼) to reorder** — works great on mobile
-- **One-click copy** on every link, username, and password
-- **Confirmation dialog on delete** — no more accidental data loss
-- **Created / last-updated timestamps** — "2h ago" with full date on hover
-- **New entries append to bottom** — preserves existing order
-- **Reveal/hide** for Id & Pass passwords
-- **Import / Export** — full JSON backup + restore from Settings tab
-- **Real-time sync** — changes appear instantly on every device
+## What was in v18
+
+### ⚡ Performance — feels dramatically faster
+- **Optimistic updates** on every tab. Add / edit / delete / reorder / bulk delete update the UI instantly — no waiting for the DB round-trip. If the save fails, the UI reverts automatically with a friendly error.
+- **Smart realtime sync.** When another device changes data, only the affected table reloads (not all 5 like before). Rapid changes are debounced (80ms window) to avoid re-renders during bulk operations.
+- **Memoized tab components.** Switching tabs no longer re-renders unaffected ones.
+- **Splash shortened.** Open splash cut from 3s → 1.2s. Welcome splash cut from 2s → 0.9s. Both now accept a tap to skip instantly.
+
+
+### ✏️ Editable About Us (Zeus only)
+- All About Us content now lives in the database. Zeus sees an **"✏️ Edit"** button in the About Us modal to change:
+  - Developer name, company, app version
+  - Contact email
+  - Donation intro text
+  - Crypto name (e.g. USDT), network (e.g. TRC20)
+  - Wallet address
+  - **QR code image** — Zeus uploads a new PNG/JPG/WebP (max 2 MB), with live preview before save
+  - Warning text
+- QR uploads go to **Supabase Storage** in a public bucket called `about-assets`, with unique filenames so CDN caching never serves stale images.
+- Changes push to all devices in real-time via realtime subscription on `about_content` table.
+- Co-admins and sub-admins see the same modal but in read-only mode (no Edit button).
+- On first load (before any edits), the hardcoded defaults show. As soon as Zeus saves once, the saved version takes over.
+
+## All features (v16–v18)
+
+- Zeus / Co-admin / Sub-admin role hierarchy
+- Default Zeus: `Zeus` / `Hello@123` (change in Settings)
+- Multi-account sign-in, avatar switcher
+- Dark mode (auto / light / dark)
+- Notice / Backend / Games / Id & Pass with real-time sync
+- Search on every tab
+- Id & Pass filter pills (by sub-admin)
+- Edit everything — entries, sub-admins, co-admins, About Us content, QR image
+- Bulk select & delete
+- Drag or ▲▼ reorder (mobile-friendly)
+- Copy buttons on links, usernames, passwords, wallet addresses
+- Show/hide password toggles
+- Confirmation dialogs on destructive actions
+- Timestamps with "Updated" indicator when edited
+- Pulsing "NEW" badge on notices <24h old
+- Tab persistence across refresh
+- Friendly error messages
+- JSON import / export backup
+- About Us modal with donation info + editable QR
 
 ## Tech Stack
 
-- Next.js 14 (App Router) + React 18 + TypeScript
-- Supabase (Postgres + realtime)
+- Next.js 14.2.35 + React 18 + TypeScript
+- Supabase (Postgres + Realtime + Storage)
 
-## Local development
+## Setup
 
-1. Copy `.env.example` to `.env.local` and fill in your Supabase URL and publishable key.
-2. `npm install && npm run dev`
-3. Open http://localhost:3000
+1. Run `setup.sql` in Supabase SQL Editor (idempotent — safe on fresh or existing projects)
+2. Create `about-assets` Storage bucket in Supabase (detailed steps in deployment guide)
+3. Push to GitHub — Vercel auto-deploys
+4. Required env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-## Deploy to Vercel
+## Security
 
-Set these two environment variables in the Vercel project settings:
-
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-
-Then push to GitHub, import in Vercel, deploy.
-
-## Database schema
-
-First-time setup: run the `schema.sql` and `migration.sql` (the latter only if you already ran the original schema).
-
-Tables:
-- `zeus_creds` — admin credentials (1 row)
-- `sub_admins` — sub-admin accounts
-- `backend_entries`, `game_entries`, `idpass_entries` — content tables
-- `notices` — notice board
-
-All tables have `created_at`, `sort_order`, and `updated_at` columns. RLS is enabled with public-access policies; app login logic controls visibility per role.
-
-## Security notes
-
-Passwords are stored as plain text in Supabase for simplicity. For sensitive production use, add server-side password hashing (e.g. Supabase Edge Functions + bcrypt).
-
-The `anon` / `publishable` key is safe to ship in frontend code. Never commit the `service_role` key.
+Passwords stored as plain text (upgrade to bcrypt hashing for production-grade). The `publishable` Supabase key is safe to ship in the frontend. Never commit the `service_role` key.
