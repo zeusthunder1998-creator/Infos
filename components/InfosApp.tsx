@@ -12,6 +12,7 @@ import {
   loadBackend, loadGames, addGameEntry, updateGameEntry, deleteGameEntry, bulkDeleteGameEntries, reorderGames, updateGameAssignees,
   loadIdPass, addIdPass, updateIdPass, deleteIdPass, bulkDeleteIdPass, reorderIdPass, updateIdPassAssignees,
   loadNotices, addNotice, updateNotice, deleteNotice, bulkDeleteNotices, reorderNotices, updateNoticeRecipients,
+  loadPasteBuffer, addPaste, deletePaste, purgeExpiredPaste, PASTE_TTL_MS,
   subscribeAll, exportAll, bulkInsert,
   loadAbout, DEFAULT_ABOUT, AboutContent,
 } from '@/lib/storage';
@@ -138,7 +139,7 @@ function ReorderList({ items, canReorder, canSelect, selectedIds, onToggleSelect
                 <button onClick={(e) => { e.stopPropagation(); move(idx, 1); }} disabled={idx === items.length - 1} className="infos-arrow-btn" title="Move down" type="button">▼</button>
               </div>
             )}
-            <div style={{ flex: 1, minWidth: 0 }}>{renderItem(item)}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>{renderItem(item, idx)}</div>
           </div>
         );
       })}
@@ -427,15 +428,19 @@ function EntryForm({ fields, subs, onSubmit, submitLabel = 'Add' }: any) {
   );
 }
 
-function IdPassEntryForm({ subs, onSubmit }: any) {
+function IdPassEntryForm({ subs, onSubmit, section = 'games' }: any) {
   const init = () => ({ game: '', shortName: '', username: '', password: '', description: '', assignees: [] as string[] });
   const [v, setV] = useState<any>(init);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [showPass, setShowPass] = useState(false);
+  const isAccounts = section === 'accounts';
+  const primaryLabel = isAccounts ? 'Account' : 'Game';
+  const primaryPlaceholder = isAccounts ? 'e.g. Facebook, Gmail, VPN, Oslink' : 'Game name';
+  const shortPlaceholder = isAccounts ? 'e.g. FB, GM' : 'e.g. LoL';
   const handle = async () => {
     setErr('');
-    if (!v.game.trim() || !v.username.trim() || !v.password.trim()) { setErr('Game, username, and password are required'); return; }
+    if (!v.game.trim() || !v.username.trim() || !v.password.trim()) { setErr(`${primaryLabel}, username, and password are required`); return; }
     if (v.assignees.length === 0) { setErr('Assign to at least one sub-admin or "Assign to all"'); return; }
     setBusy(true);
     try { await onSubmit(v); setV(init()); setShowPass(false); }
@@ -445,11 +450,11 @@ function IdPassEntryForm({ subs, onSubmit }: any) {
   return (
     <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
       <div className="infos-grid2" style={S.grid2}>
-        <div><label style={S.label}>Game</label><TextInput value={v.game} onChange={(e: any) => setV({ ...v, game: e.target.value })} placeholder="Game name" /></div>
-        <div><label style={S.label}>Short name (optional)</label><TextInput value={v.shortName} onChange={(e: any) => setV({ ...v, shortName: e.target.value })} placeholder="e.g. LoL" /></div>
+        <div><label style={S.label}>{primaryLabel}</label><TextInput value={v.game} onChange={(e: any) => setV({ ...v, game: e.target.value })} placeholder={primaryPlaceholder} /></div>
+        <div><label style={S.label}>Short name (optional)</label><TextInput value={v.shortName} onChange={(e: any) => setV({ ...v, shortName: e.target.value })} placeholder={shortPlaceholder} /></div>
       </div>
       <div className="infos-grid2" style={{ ...S.grid2, marginTop: '10px' }}>
-        <div><label style={S.label}>Username</label><TextInput value={v.username} onChange={(e: any) => setV({ ...v, username: e.target.value })} placeholder="Login username" /></div>
+        <div><label style={S.label}>Username</label><TextInput value={v.username} onChange={(e: any) => setV({ ...v, username: e.target.value })} placeholder={isAccounts ? 'Username or email' : 'Login username'} /></div>
         <div>
           <label style={S.label}>Password</label>
           <div style={{ position: 'relative' }}>
@@ -520,12 +525,16 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
   const isAdmin = isAdminRole(user.role);
   const [confirmEl, confirm] = useConfirm();
   const [q, setQ] = useState('');
+  const [filterSub, setFilterSub] = useState<'all' | string>('all');
   const [editing, setEditing] = useState<any>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
 
   const visible = useMemo(() => {
-    const base = isAdmin ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+    let base = isAdmin ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+    if (isAdmin && filterSub !== 'all') {
+      base = base.filter((e: any) => isVisibleToSub(e.assignees, filterSub));
+    }
     if (!q.trim()) return base;
     const s = q.toLowerCase();
     return base.filter((e: any) =>
@@ -534,8 +543,9 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
       (e.link || '').toLowerCase().includes(s) ||
       (e.description || '').toLowerCase().includes(s)
     );
-  }, [isAdmin, entries, user, q]);
+  }, [isAdmin, entries, user, q, filterSub]);
   const nextSortOrder = useMemo(() => (entries.length ? Math.max(...entries.map((e: any) => e.sortOrder || 0)) + 1 : 0), [entries]);
+  const subOnlyForFilter = useMemo(() => subs.filter((s: any) => s.role !== 'co'), [subs]);
 
   // OPTIMISTIC UPDATES — UI changes instantly, DB saves in background.
   // On failure we apply the INVERSE operation (rather than restoring a stale snapshot)
@@ -616,11 +626,12 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
   };
   const toggleSelect = (id: string) => setSelected(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
 
-  const renderItem = (e: any) => (
+  const renderItem = (e: any, idx: number) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: '15px', letterSpacing: '-0.01em' }}>
-          {e.gameName}{e.shortName && <span style={S.badge}>{e.shortName}</span>}
+        <div style={{ fontWeight: 600, fontSize: '15px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '11px', padding: '2px 8px', background: C.softBg, color: C.textSecondary, borderRadius: '10px', fontWeight: 700, letterSpacing: '0.02em', flexShrink: 0 }}>#{idx + 1}</span>
+          <span>{e.gameName}{e.shortName && <span style={S.badge}>{e.shortName}</span>}</span>
         </div>
         <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <a href={e.link} target="_blank" rel="noopener noreferrer" style={S.linkPill}>{e.link}</a>
@@ -638,20 +649,37 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
       )}
     </div>
   );
-  const canReorder = isAdmin && !q.trim() && !selectMode;
+  const canReorder = isAdmin && !q.trim() && filterSub === 'all' && !selectMode;
   return (
     <div>
       {confirmEl}
       <EditGameModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
       {isAdmin && <EntryForm fields={[{ key: 'gameName', label: 'Game name' }, { key: 'shortName', label: 'Short name' }, { key: 'link', label: 'Link', placeholder: 'https://...' }]} subs={subs} onSubmit={add} />}
       {entries.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search games, links, descriptions…" />}
+      {isAdmin && subOnlyForFilter.length > 0 && entries.length > 0 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: C.textTertiary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '2px' }}>Filter:</span>
+          <button onClick={() => setFilterSub('all')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: filterSub === 'all' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: filterSub === 'all' ? C.accent : C.cardBg, color: filterSub === 'all' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: filterSub === 'all' ? 600 : 500 }}>All</button>
+          {subOnlyForFilter.map((s: any) => {
+            const on = filterSub === s.id;
+            return (
+              <button key={s.id} onClick={() => setFilterSub(s.id)} className="infos-pill"
+                style={{ padding: '5px 12px', fontSize: '12.5px', border: on ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: on ? C.accent : C.cardBg, color: on ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: on ? 600 : 500 }}>{s.username}</button>
+            );
+          })}
+        </div>
+      )}
       <SelectionToolbar isAdmin={isAdmin} inSelectMode={selectMode}
         onEnter={() => setSelectMode(true)} onExit={() => { setSelectMode(false); setSelected([]); }}
         selectedCount={selected.length} onBulkDelete={bulkDelete}
         onSelectAll={() => setSelected(visible.map((e: any) => e.id))}
         onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
-      {visible.length === 0 ? <div style={S.empty}>{q.trim() ? 'No matches found.' : emptyMsg}</div> : (
+      {visible.length === 0 ? <div style={S.empty}>{q.trim() || filterSub !== 'all' ? 'No matches found.' : emptyMsg}</div> : (
         <div>
+          <div style={{ fontSize: '12px', color: C.textTertiary, marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {visible.length} {visible.length === 1 ? 'entry' : 'entries'}{filterSub !== 'all' && ` (filtered)`}
+          </div>
           <ReorderHint canReorder={canReorder} />
           <ReorderList items={visible} canReorder={canReorder}
             canSelect={selectMode} selectedIds={selected} onToggleSelect={toggleSelect}
@@ -670,12 +698,32 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
   const [reveal, setReveal] = useState<any>({});
   const [q, setQ] = useState('');
   const [filterSub, setFilterSub] = useState<'all' | string>('all');
+  const [section, setSection] = useState<'games' | 'accounts'>('games');
   const [editing, setEditing] = useState<any>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
 
+  // Reset selection / filters when switching sections to avoid cross-section state bleed
+  useEffect(() => {
+    setSelected([]);
+    setSelectMode(false);
+    setFilterSub('all');
+    setQ('');
+  }, [section]);
+
+  // Counts per section (used for sub-tab pill labels) — based on what THIS user can see,
+  // independent of filter/search. We compute against the user-visible base, not the
+  // current filtered visible list, so the counts on tabs stay stable.
+  const userVisibleAll = useMemo(() => {
+    return isAdmin ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+  }, [isAdmin, entries, user]);
+  const gamesCount = useMemo(() => userVisibleAll.filter((e: any) => (e.section || 'games') === 'games').length, [userVisibleAll]);
+  const accountsCount = useMemo(() => userVisibleAll.filter((e: any) => (e.section || 'games') === 'accounts').length, [userVisibleAll]);
+
   const visible = useMemo(() => {
     let base = isAdmin ? entries : entries.filter((e: any) => isVisibleToSub(e.assignees, user.id));
+    // Section split — entries default to 'games' for legacy data
+    base = base.filter((e: any) => (e.section || 'games') === section);
     if (isAdmin && filterSub !== 'all') {
       base = base.filter((e: any) => isVisibleToSub(e.assignees, filterSub));
     }
@@ -687,7 +735,7 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
       (e.username || '').toLowerCase().includes(s) ||
       (e.description || '').toLowerCase().includes(s)
     );
-  }, [isAdmin, entries, user, q, filterSub]);
+  }, [isAdmin, entries, user, q, filterSub, section]);
   const nextSortOrder = useMemo(() => (entries.length ? Math.max(...entries.map((e: any) => e.sortOrder || 0)) + 1 : 0), [entries]);
   const subOnlyForFilter = useMemo(() => subs.filter((s: any) => s.role !== 'co'), [subs]);
 
@@ -699,6 +747,7 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
       username: (vals.username || '').trim(),
       // password is intentionally NOT trimmed — leading/trailing spaces may be intentional
       description: (vals.description || '').trim(),
+      section, // tag the entry with the currently active sub-section
       id: uid(),
       createdAt: Date.now(),
       sortOrder: nextSortOrder,
@@ -762,11 +811,12 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
   };
   const toggleSelect = (id: string) => setSelected(selected.includes(id) ? selected.filter(x => x !== id) : [...selected, id]);
 
-  const renderItem = (e: any) => (
+  const renderItem = (e: any, idx: number) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '8px', letterSpacing: '-0.01em' }}>
-          {e.game}{e.shortName && <span style={S.badge}>{e.shortName}</span>}
+        <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '8px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '11px', padding: '2px 8px', background: C.softBg, color: C.textSecondary, borderRadius: '10px', fontWeight: 700, letterSpacing: '0.02em', flexShrink: 0 }}>#{idx + 1}</span>
+          <span>{e.game}{e.shortName && <span style={S.badge}>{e.shortName}</span>}</span>
         </div>
         <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
           <span style={{ minWidth: '72px', fontWeight: 500 }}>Username</span>
@@ -794,13 +844,46 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
     </div>
   );
   const canReorder = isAdmin && !q.trim() && filterSub === 'all' && !selectMode;
+  const sectionLabel = section === 'accounts' ? 'account' : 'game';
+  const emptyMsg = section === 'accounts' ? 'No accounts yet.' : 'No game credentials yet.';
   return (
     <div>
       {confirmEl}
       <EditIdPassModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
-      {isAdmin && <IdPassEntryForm subs={subs} onSubmit={add} />}
-      {entries.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search credentials by game or username…" />}
-      {isAdmin && subOnlyForFilter.length > 0 && entries.length > 0 && (
+      {/* Sub-tabs: Games | Accounts. Always visible (even when empty) so the user knows
+          both sections exist and can switch to add their first entry. */}
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '1.25rem', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px' }}>
+        <button
+          onClick={() => setSection('games')}
+          className="infos-pill"
+          style={{
+            padding: '7px 16px', fontSize: '13px', borderRadius: '10px',
+            border: section === 'games' ? `1px solid ${C.accent}` : `1px solid transparent`,
+            background: section === 'games' ? C.accentSoft : 'transparent',
+            color: section === 'games' ? C.accentText : C.textSecondary,
+            cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px',
+          }}>
+          <span>🎮 Games</span>
+          <span style={{ fontSize: '11px', padding: '1px 7px', background: section === 'games' ? C.accent : C.softBg, color: section === 'games' ? 'white' : C.textTertiary, borderRadius: '10px', fontWeight: 700 }}>{gamesCount}</span>
+        </button>
+        <button
+          onClick={() => setSection('accounts')}
+          className="infos-pill"
+          style={{
+            padding: '7px 16px', fontSize: '13px', borderRadius: '10px',
+            border: section === 'accounts' ? `1px solid ${C.accent}` : `1px solid transparent`,
+            background: section === 'accounts' ? C.accentSoft : 'transparent',
+            color: section === 'accounts' ? C.accentText : C.textSecondary,
+            cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px',
+          }}>
+          <span>🔐 Accounts</span>
+          <span style={{ fontSize: '11px', padding: '1px 7px', background: section === 'accounts' ? C.accent : C.softBg, color: section === 'accounts' ? 'white' : C.textTertiary, borderRadius: '10px', fontWeight: 700 }}>{accountsCount}</span>
+        </button>
+      </div>
+
+      {isAdmin && <IdPassEntryForm subs={subs} onSubmit={add} section={section} />}
+      {visible.length > 0 || q.trim() ? <SearchBar value={q} onChange={setQ} placeholder={section === 'accounts' ? 'Search accounts by name or username…' : 'Search game credentials…'} /> : null}
+      {isAdmin && subOnlyForFilter.length > 0 && visible.length + (q.trim() ? 1 : 0) > 0 && (
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
           <span style={{ fontSize: '12px', color: C.textTertiary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '2px' }}>Filter:</span>
           <button onClick={() => setFilterSub('all')} className="infos-pill"
@@ -819,8 +902,11 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
         selectedCount={selected.length} onBulkDelete={bulkDelete}
         onSelectAll={() => setSelected(visible.map((e: any) => e.id))}
         onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
-      {visible.length === 0 ? <div style={S.empty}>{q.trim() || filterSub !== 'all' ? 'No matches found.' : 'No credentials yet.'}</div> : (
+      {visible.length === 0 ? <div style={S.empty}>{q.trim() || filterSub !== 'all' ? 'No matches found.' : emptyMsg}</div> : (
         <div>
+          <div style={{ fontSize: '12px', color: C.textTertiary, marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {visible.length} {sectionLabel}{visible.length === 1 ? '' : 's'}{filterSub !== 'all' && ` (filtered)`}
+          </div>
           <ReorderHint canReorder={canReorder} />
           <ReorderList items={visible} canReorder={canReorder}
             canSelect={selectMode} selectedIds={selected} onToggleSelect={toggleSelect}
@@ -833,13 +919,192 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
 const IdPassTab = memo(IdPassTabInner);
 
 // ---------------- Tab: Notice ----------------
-function NoticeTabInner({ user, subs, items, setItems, reload }: any) {
+// ---------------- Copy & Paste (sub-admin self-only credential snippets) ----------------
+// Sub-admin shares credentials between their own multiple phones.
+// 5-minute TTL, self-only visibility (other sub-admins / admins cannot see).
+// Cleanup is lazy: expired rows hide instantly client-side and are deleted
+// from the DB on next mount or whenever the in-tab heartbeat ticks.
+function CopyPasteSection({ user, pastes, setPastes, reload }: any) {
+  const [game, setGame] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [now, setNow] = useState(() => Date.now());
+  const [confirmEl, confirm] = useConfirm();
+
+  // Tick every 60s. We only use `now` to (1) hide expired entries from the
+  // visible list and (2) compute a coarse "~Xm left" hint. No second-by-second
+  // ticking — the hint is intentionally low-precision so the screen stays calm.
+  // Visibility-aware: pauses when tab is hidden to save battery.
+  useEffect(() => {
+    let id: any;
+    const start = () => {
+      if (id) return;
+      id = setInterval(() => setNow(Date.now()), 60 * 1000);
+    };
+    const stop = () => {
+      if (id) { clearInterval(id); id = null; }
+    };
+    const onVis = () => {
+      if (document.hidden) stop();
+      else { setNow(Date.now()); start(); }
+    };
+    if (!document.hidden) start();
+    document.addEventListener('visibilitychange', onVis);
+    return () => { stop(); document.removeEventListener('visibilitychange', onVis); };
+  }, []);
+
+  // Periodic background purge of expired rows from the DB. Runs every 60s while
+  // the Copy & Paste section is mounted. Cheap query (filter by expires_at < now).
+  // Skips when tab is hidden to avoid unnecessary network calls on background tabs.
+  useEffect(() => {
+    const ws = user.ownerId || 'zeus';
+    const t = setInterval(() => {
+      if (document.hidden) return;
+      purgeExpiredPaste(ws);
+    }, 60 * 1000);
+    return () => clearInterval(t);
+  }, [user.ownerId]);
+
+  // Self-only filter — even though the loader returns workspace-scoped rows,
+  // the user only ever sees their OWN paste entries. Plus exclude expired.
+  const myPastes = useMemo(() => {
+    return pastes.filter((p: any) => p.userId === user.id && p.expiresAt > now);
+  }, [pastes, user.id, now]);
+
+  const submit = async () => {
+    setErr('');
+    if (!game.trim() || !username.trim() || !password.trim()) {
+      setErr('All three fields are required'); return;
+    }
+    setBusy(true);
+    const createdAt = Date.now();
+    const newPaste = {
+      id: uid(),
+      game: game.trim(),
+      username: username.trim(),
+      password, // not trimmed — passwords can have leading/trailing spaces
+      userId: user.id,
+      ownerId: user.ownerId || 'zeus',
+      createdAt,
+      expiresAt: createdAt + PASTE_TTL_MS,
+    };
+    setPastes((prev: any[]) => [newPaste, ...prev]);
+    try {
+      await addPaste(newPaste);
+      setGame(''); setUsername(''); setPassword('');
+    } catch (e: any) {
+      setPastes((prev: any[]) => prev.filter(x => x.id !== newPaste.id));
+      setErr(friendlyError(e));
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (p: any) => {
+    const ok = await confirm({ title: 'Delete this entry?', message: 'It will be removed from all your phones immediately.', confirmLabel: 'Delete', danger: true });
+    if (!ok) return;
+    const deletedItem = p;
+    setPastes((prev: any[]) => prev.filter(x => x.id !== p.id));
+    try { await deletePaste(p.id); }
+    catch (err: any) {
+      setPastes((prev: any[]) => [...prev, deletedItem]);
+      alert(friendlyError(err));
+    }
+  };
+
+  // Format the copy payload exactly as specified:
+  //   GameName
+  //   ID : <username>
+  //   PWD : <password>
+  const buildCopyText = (p: any) => `${p.game}\nID : ${p.username}\nPWD : ${p.password}`;
+
+  // Coarse "auto-deletes in ~Xm" hint shown on each entry. Rounds UP so users
+  // never see "0 min" while the entry is still visible. Refreshed by the 60s
+  // tick — no second-level countdown.
+  const expiryHint = (p: any) => {
+    const remaining = Math.max(0, p.expiresAt - now);
+    const mins = Math.ceil(remaining / 60000);
+    if (mins <= 1) return 'Auto-deletes in <1 min';
+    return `Auto-deletes in ~${mins} min`;
+  };
+
+  return (
+    <div>
+      {confirmEl}
+      {/* Form */}
+      <div style={{ ...S.softCard, marginBottom: '1.25rem' }}>
+        <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '12px', lineHeight: 1.5 }}>
+          Quickly share a credential between your own phones. The entry is visible <strong>only to you</strong> on every device you&apos;re signed in on, and <strong>auto-deletes after 5 minutes</strong>.
+        </div>
+        <div className="infos-grid2" style={S.grid2}>
+          <div><label style={S.label}>Game name</label><TextInput value={game} onChange={(e: any) => setGame(e.target.value)} placeholder="e.g. PUBG" /></div>
+          <div><label style={S.label}>Username</label><TextInput value={username} onChange={(e: any) => setUsername(e.target.value)} placeholder="Login username" /></div>
+        </div>
+        <div style={{ marginTop: '10px' }}>
+          <label style={S.label}>Password</label>
+          <TextInput type="text" value={password} onChange={(e: any) => setPassword(e.target.value)} placeholder="Login password" onKeyDown={(e: any) => { if (e.key === 'Enter') submit(); }} />
+        </div>
+        {err && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+        <div style={{ marginTop: '14px', textAlign: 'right' }}>
+          <Btn primary onClick={submit} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Publishing…' : 'Publish (5 min)'}</Btn>
+        </div>
+      </div>
+
+      {/* Published list */}
+      {myPastes.length === 0 ? (
+        <div style={S.empty}>Nothing here yet. Publish a credential and it&apos;ll show on your other phones instantly.</div>
+      ) : (
+        <div>
+          <div style={{ fontSize: '12px', color: C.textTertiary, marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {myPastes.length} active {myPastes.length === 1 ? 'entry' : 'entries'}
+          </div>
+          {myPastes.map((p: any, idx: number) => (
+            <div key={p.id} style={S.item}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {/* Tiny expiry hint above the entry — no live countdown, just a coarse note */}
+                  <div style={{ fontSize: '11px', color: C.textTertiary, marginBottom: '6px', fontWeight: 500 }}>{expiryHint(p)}</div>
+                  <div style={{ fontWeight: 600, fontSize: '15px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '11px', padding: '2px 8px', background: C.softBg, color: C.textSecondary, borderRadius: '10px', fontWeight: 700, letterSpacing: '0.02em', flexShrink: 0 }}>#{idx + 1}</span>
+                    <span>{p.game}</span>
+                  </div>
+                  {/* Always-visible plaintext block — used for copy/paste only,
+                      so masking would defeat the purpose. */}
+                  <div style={{ marginTop: '8px', fontSize: '13px', color: C.textPrimary, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', whiteSpace: 'pre-line', padding: '10px 12px', background: C.softBg, borderRadius: '8px', border: `1px solid ${C.border}`, wordBreak: 'break-all' }}>{buildCopyText(p)}</div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <CopyButton value={buildCopyText(p)} label="all" />
+                  <Btn danger onClick={() => remove(p)}>Delete</Btn>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes, reloadPastes }: any) {
   const isAdmin = isAdminRole(user.role);
+  const isSubOnly = !isAdmin; // 'sub' role only — admins (zeus, co) don't see Copy & Paste sub-tab
+  const [subTab, setSubTab] = useState<'notice' | 'paste'>('notice');
   const [confirmEl, confirm] = useConfirm();
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<any>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
+
+  // When the user opens the Copy & Paste sub-tab, run a one-shot purge of
+  // any expired rows for this workspace. Also re-fetch immediately to clear
+  // local stale state. Cheap, idempotent.
+  useEffect(() => {
+    if (subTab === 'paste' && isSubOnly) {
+      purgeExpiredPaste(user.ownerId || 'zeus').then(() => reloadPastes && reloadPastes());
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subTab]);
 
   const visible = useMemo(() => {
     const base = isAdmin ? items : items.filter((x: any) => isVisibleToSub(x.recipients, user.id));
@@ -944,10 +1209,10 @@ function NoticeTabInner({ user, subs, items, setItems, reload }: any) {
     </div>
   );
   const canReorder = isAdmin && !q.trim() && !selectMode;
-  return (
-    <div>
-      {confirmEl}
-      <EditNoticeModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
+
+  // Notice content (the "📢 Notice" sub-tab body, OR the full tab for admins)
+  const noticeContent = (
+    <>
       {isAdmin && (subs.filter((s: any) => s.role !== 'co').length === 0
         ? <div style={{ ...S.empty, marginBottom: '1.25rem' }}>Create sub-admins first to post notices.</div>
         : <NoticeEntryForm subs={subs} onSubmit={add} />)}
@@ -959,12 +1224,63 @@ function NoticeTabInner({ user, subs, items, setItems, reload }: any) {
         onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
       {visible.length === 0 ? <div style={S.empty}>{q.trim() ? 'No matches found.' : isAdmin ? 'No notices posted yet.' : 'No notices for you yet.'}</div> : (
         <div>
+          <div style={{ fontSize: '12px', color: C.textTertiary, marginBottom: '8px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {visible.length} {visible.length === 1 ? 'notice' : 'notices'}
+          </div>
           <ReorderHint canReorder={canReorder} />
           <ReorderList items={visible} canReorder={canReorder}
             canSelect={selectMode} selectedIds={selected} onToggleSelect={toggleSelect}
             onReorder={reorder} renderItem={renderItem} keyFn={(x: any) => x.id} />
         </div>
       )}
+    </>
+  );
+
+  return (
+    <div>
+      {confirmEl}
+      <EditNoticeModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
+
+      {/* Sub-tabs only for sub-admins (Copy & Paste is a sub-admin-only feature).
+          Admins (Zeus, co-admin) see the Notice tab the same as before. */}
+      {isSubOnly ? (
+        <>
+          <div style={{ display: 'flex', gap: '6px', marginBottom: '1.25rem', borderBottom: `1px solid ${C.border}`, paddingBottom: '8px' }}>
+            <button
+              onClick={() => setSubTab('notice')}
+              className="infos-pill"
+              style={{
+                padding: '7px 16px', fontSize: '13px', borderRadius: '10px',
+                border: subTab === 'notice' ? `1px solid ${C.accent}` : `1px solid transparent`,
+                background: subTab === 'notice' ? C.accentSoft : 'transparent',
+                color: subTab === 'notice' ? C.accentText : C.textSecondary,
+                cursor: 'pointer', fontWeight: 600,
+              }}>
+              📢 Notices
+            </button>
+            <button
+              onClick={() => setSubTab('paste')}
+              className="infos-pill"
+              style={{
+                padding: '7px 16px', fontSize: '13px', borderRadius: '10px',
+                border: subTab === 'paste' ? `1px solid ${C.accent}` : `1px solid transparent`,
+                background: subTab === 'paste' ? C.accentSoft : 'transparent',
+                color: subTab === 'paste' ? C.accentText : C.textSecondary,
+                cursor: 'pointer', fontWeight: 600,
+              }}>
+              📋 Copy &amp; Paste
+            </button>
+          </div>
+          {subTab === 'notice' ? noticeContent : (
+            <>
+              <div style={{ fontSize: '12px', color: C.textSecondary, marginBottom: '12px', fontWeight: 500, fontStyle: 'italic' }}>
+                Easier for post and paste — share credentials between your own phones, auto-deletes in 5 minutes.
+              </div>
+              <CopyPasteSection user={user} pastes={pastes || []} setPastes={setPastes} reload={reloadPastes} />
+            </>
+          )}
+        </>
+      ) : noticeContent}
     </div>
   );
 }
@@ -1308,7 +1624,7 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
     setExporting(true);
     try {
       // v19: export only the current workspace's data
-      const workspaceId = user.role === 'zeus' ? 'zeus' : (user.role === 'co' ? user.id : (user.ownerId || 'zeus'));
+      const workspaceId = workspaceIdForUser(user);
       const data = await exportAll(workspaceId);
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -1338,7 +1654,7 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
       // Determine target workspace for the import:
       //   - v1 backup → goes to current workspace (legacy assumed Zeus)
       //   - v2 backup → goes to current workspace, regardless of original
-      const targetWorkspace = user.role === 'zeus' ? 'zeus' : (user.role === 'co' ? user.id : (user.ownerId || 'zeus'));
+      const targetWorkspace = workspaceIdForUser(user);
       const versionNote = data.version === 1
         ? 'This is a legacy v1 backup. All entries will go into your current workspace.'
         : `This is a v${data.version} backup originally from workspace "${data.workspace || 'unknown'}". Entries will go into YOUR current workspace.`;
@@ -1370,7 +1686,8 @@ function SettingsModal({ open, onClose, user, onForceLogout }: any) {
       if (data.idpass_entries?.length) await bulkInsert('idpass_entries', data.idpass_entries.map((e: any) => ({
         id: e.id, game: e.game, short_name: e.shortName || '',
         username: e.username, password: e.password, description: e.description || '',
-        assignees: e.assignees || [], created_at: e.createdAt, sort_order: e.sortOrder ?? 0,
+        assignees: e.assignees || [], section: e.section || 'games',
+        created_at: e.createdAt, sort_order: e.sortOrder ?? 0,
         owner_id: targetWorkspace,
       })));
       if (data.notices?.length) await bulkInsert('notices', data.notices.map((n: any) => ({
@@ -1476,17 +1793,21 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   const [games, setGames] = useState<any[]>([]);
   const [idpass, setIdpass] = useState<any[]>([]);
   const [notices, setNotices] = useState<any[]>([]);
+  const [pastes, setPastes] = useState<any[]>([]);
   const [aboutContent, setAboutContent] = useState<AboutContent>(DEFAULT_ABOUT);
   const [loaded, setLoaded] = useState(false);
 
   // Per-table reloaders — scoped by current workspace.
   // about_content stays SHARED (no ownerId) per design decision.
+  // paste_buffer is workspace-scoped at the loader level; sub-admin self-only
+  // visibility is enforced client-side in the CopyPasteSection component.
   const reloaders = useMemo(() => ({
     sub_admins: async () => { try { setSubs(await loadSubs(workspaceId)); } catch (e) { console.error(e); } },
     backend_entries: async () => { try { setBackend(await loadBackend(workspaceId)); } catch (e) { console.error(e); } },
     game_entries: async () => { try { setGames(await loadGames(workspaceId)); } catch (e) { console.error(e); } },
     idpass_entries: async () => { try { setIdpass(await loadIdPass(workspaceId)); } catch (e) { console.error(e); } },
     notices: async () => { try { setNotices(await loadNotices(workspaceId)); } catch (e) { console.error(e); } },
+    paste_buffer: async () => { try { setPastes(await loadPasteBuffer(workspaceId)); } catch (e) { console.error(e); } },
     about_content: async () => { try { setAboutContent(await loadAbout()); } catch (e) { console.error(e); } },
   }), [workspaceId]);
 
@@ -1495,11 +1816,18 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
     await Promise.all(Object.values(reloaders).map(fn => fn()));
   }, [reloaders]);
 
-  // Debounced realtime handler — coalesces multiple rapid events on the same table
+  // Debounced realtime handler — coalesces multiple rapid events on the same table.
+  // Exception: paste_buffer fires with NO debounce so cross-device sync of
+  // copy-paste entries feels instant (the whole point of the feature).
   const debounceTimers = useRef<Record<string, any>>({});
   const reloadTable = useCallback((table: string) => {
     const fn = (reloaders as any)[table];
     if (!fn) return;
+    if (table === 'paste_buffer') {
+      // Instant fire — no debounce
+      fn();
+      return;
+    }
     // Debounce 80ms to coalesce rapid bulk operations
     clearTimeout(debounceTimers.current[table]);
     debounceTimers.current[table] = setTimeout(() => fn(), 80);
@@ -1513,13 +1841,17 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
     // before the new workspace's data arrives. Reset loaded to false so the
     // splash/loader shows during the gap.
     setLoaded(false);
-    setSubs([]); setBackend([]); setGames([]); setIdpass([]); setNotices([]);
+    setSubs([]); setBackend([]); setGames([]); setIdpass([]); setNotices([]); setPastes([]);
     (async () => {
+      // v20: Best-effort cleanup of expired paste rows on every load.
+      // Failures are silent — the loader retrieves the rows anyway, and
+      // CopyPasteSection filters expired ones client-side.
+      try { await purgeExpiredPaste(workspaceId); } catch {}
       await reloadAll();
       if (alive) setLoaded(true);
     })();
     const unsub = subscribeAll(
-      ['sub_admins', 'backend_entries', 'game_entries', 'idpass_entries', 'notices', 'about_content'],
+      ['sub_admins', 'backend_entries', 'game_entries', 'idpass_entries', 'notices', 'paste_buffer', 'about_content'],
       (table: string) => { if (alive) reloadTable(table); }
     );
     return () => {
@@ -1528,7 +1860,30 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
       // Clear any pending debounce timers (use captured ref to satisfy lint)
       Object.values(timersRef).forEach(t => clearTimeout(t));
     };
-  }, [activeKey, reloadAll, reloadTable]);
+  }, [activeKey, reloadAll, reloadTable, workspaceId]);
+
+  // v20: Resilient sync. Mobile browsers (especially TWA) suspend WebSockets
+  // when the app goes to background. When the user comes back (visibility
+  // change → visible) or the network reconnects, refetch all data so the UI
+  // is current even if realtime missed events while we were asleep.
+  useEffect(() => {
+    let lastRefresh = Date.now();
+    const refresh = () => {
+      // Throttle to once per 2 seconds — prevents storm if multiple events fire
+      // (visibilitychange + online can both arrive when waking from sleep).
+      if (Date.now() - lastRefresh < 2000) return;
+      lastRefresh = Date.now();
+      // Best-effort cleanup of expired paste rows, then reload everything
+      purgeExpiredPaste(workspaceId).finally(() => reloadAll());
+    };
+    const onVis = () => { if (!document.hidden) refresh(); };
+    window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [reloadAll, workspaceId]);
 
   // If on admins tab but not admin, fallback
   useEffect(() => {
@@ -1575,7 +1930,7 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
           {tabs.map((t) => <button key={t.id} onClick={() => setTab(t.id)} className="infos-tab" style={tabStyle(tab === t.id)}>{t.label}</button>)}
         </div>
         {!loaded ? <div style={S.empty}>Loading…</div> :
-          tab === 'notice' ? <NoticeTab user={user} subs={subs} items={notices} setItems={setNotices} reload={reloaders.notices} /> :
+          tab === 'notice' ? <NoticeTab user={user} subs={subs} items={notices} setItems={setNotices} reload={reloaders.notices} pastes={pastes} setPastes={setPastes} reloadPastes={reloaders.paste_buffer} /> :
           tab === 'backend' ? <GameListTab table="backend_entries" user={user} subs={subs} entries={backend} setEntries={setBackend} reload={reloaders.backend_entries} emptyMsg="No backend entries yet." /> :
           tab === 'games' ? <GameListTab table="game_entries" user={user} subs={subs} entries={games} setEntries={setGames} reload={reloaders.game_entries} emptyMsg="No games yet." /> :
           tab === 'idpass' ? <IdPassTab user={user} subs={subs} entries={idpass} setEntries={setIdpass} reload={reloaders.idpass_entries} /> :

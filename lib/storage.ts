@@ -73,6 +73,7 @@ function rowToIdPass(r: DbRow): Entry {
     id: r.id, game: r.game || '', shortName: r.short_name || '',
     username: r.username || '', password: r.password || '', description: r.description || '',
     assignees: r.assignees || [],
+    section: r.section || 'games',
     createdAt: Number(r.created_at),
     updatedAt: r.updated_at ? Number(r.updated_at) : null,
     sortOrder: r.sort_order ?? 0,
@@ -187,6 +188,10 @@ export async function addSub(sub: { id: string; username: string; password: stri
 }
 export async function deleteSub(id: string) {
   const sb = getSupabase();
+  // v20: Cascade-clean any paste_buffer rows owned by this sub-admin so they
+  // don't linger after the account is removed. Best-effort — failure here
+  // doesn't block the account deletion (TTL would clean them up anyway).
+  try { await sb.from('paste_buffer').delete().eq('user_id', id); } catch {}
   const { error } = await sb.from('sub_admins').delete().eq('id', id);
   if (error) throw error;
 }
@@ -196,22 +201,24 @@ export async function deleteSub(id: string) {
  * Removes:
  *   1. all sub-admins owned by this co-admin
  *   2. all content (notices, backend, games, idpass) owned by this co-admin
- *   3. the co-admin themselves
+ *   3. v20: all paste_buffer rows in this workspace
+ *   4. the co-admin themselves
  * Called only from the Create Admin tab when Zeus removes a co-admin.
  */
 export async function deleteCoAdminWorkspace(coAdminId: string) {
   const sb = getSupabase();
   const workspaceId = coAdminId; // co-admin's id is their workspace owner_id
   // Delete all content in this workspace (parallel, best-effort)
-  const [s1, s2, s3, s4, s5] = await Promise.all([
+  const [s1, s2, s3, s4, s5, s6] = await Promise.all([
     sb.from('sub_admins').delete().eq('owner_id', workspaceId),
     sb.from('backend_entries').delete().eq('owner_id', workspaceId),
     sb.from('game_entries').delete().eq('owner_id', workspaceId),
     sb.from('idpass_entries').delete().eq('owner_id', workspaceId),
     sb.from('notices').delete().eq('owner_id', workspaceId),
+    sb.from('paste_buffer').delete().eq('owner_id', workspaceId),
   ]);
   // Check for errors on any of the content deletions
-  const firstErr = [s1, s2, s3, s4, s5].find(r => r.error);
+  const firstErr = [s1, s2, s3, s4, s5, s6].find(r => r.error);
   if (firstErr?.error) throw firstErr.error;
   // Finally, delete the co-admin account itself
   const { error } = await sb.from('sub_admins').delete().eq('id', coAdminId);
@@ -317,6 +324,7 @@ export async function addIdPass(e: Entry) {
     id: e.id, game: e.game, short_name: e.shortName || '',
     username: e.username, password: e.password,
     description: e.description || '', assignees: e.assignees || [],
+    section: e.section || 'games',
     created_at: e.createdAt, sort_order: e.sortOrder,
     owner_id: e.ownerId || 'zeus',
   });
@@ -330,6 +338,7 @@ export async function updateIdPass(id: string, patch: Partial<Entry>) {
   if (patch.password !== undefined) updates.password = patch.password;
   if (patch.description !== undefined) updates.description = patch.description;
   if (patch.assignees !== undefined) updates.assignees = patch.assignees;
+  if (patch.section !== undefined) updates.section = patch.section;
   const { error } = await sb.from('idpass_entries').update(updates).eq('id', id);
   if (error) throw error;
 }
@@ -374,6 +383,75 @@ export async function bulkDeleteNotices(ids: string[]) {
 export async function reorderNotices(ids: string[]) { await reorderTable('notices', ids); }
 export async function updateNoticeRecipients(id: string, recipients: string[]) {
   await updateAssignees('notices', id, 'recipients', recipients);
+}
+
+// ---------- Paste buffer (v20: sub-admin self-share between phones) ----------
+// 5-minute auto-expiring credential snippets, scoped to a single sub-admin.
+// Visibility model:
+//   - owner_id  → workspace, used by realtime channel + RLS
+//   - user_id   → the specific sub-admin who created this; ONLY they see it,
+//                 even other sub-admins in the same workspace cannot see it
+//   - expires_at → server-stored timestamp; rows past this are hidden in UI
+//                  and lazily deleted on app open
+export const PASTE_TTL_MS = 5 * 60 * 1000;
+
+export function rowToPaste(r: DbRow): Entry {
+  return {
+    id: r.id,
+    game: r.game || '',
+    username: r.username || '',
+    password: r.password || '',
+    userId: r.user_id || '',
+    ownerId: r.owner_id || 'zeus',
+    createdAt: Number(r.created_at),
+    expiresAt: Number(r.expires_at),
+  };
+}
+
+// Loads ALL non-expired paste entries for a workspace. Self-only filtering
+// is applied client-side (in InfosApp) using userId. We could push the
+// user_id filter to the DB, but loading workspace-scoped rows keeps the
+// query pattern consistent with every other table.
+export async function loadPasteBuffer(ownerId: string = 'zeus') {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from('paste_buffer')
+    .select('*')
+    .eq('owner_id', ownerId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []).map(rowToPaste);
+}
+
+export async function addPaste(p: Entry) {
+  await insertRow('paste_buffer', {
+    id: p.id,
+    game: p.game,
+    username: p.username,
+    password: p.password,
+    user_id: p.userId,
+    owner_id: p.ownerId || 'zeus',
+    created_at: p.createdAt,
+    expires_at: p.expiresAt,
+  });
+}
+
+export async function deletePaste(id: string) { await deleteRow('paste_buffer', id); }
+
+// Lazy cleanup — deletes ALL expired rows in this workspace. Run on app open
+// and whenever the Copy & Paste tab loads. Best-effort; failures are silent
+// because expired rows are already invisible in the UI (filtered out client-side).
+export async function purgeExpiredPaste(ownerId: string = 'zeus') {
+  try {
+    const sb = getSupabase();
+    await sb
+      .from('paste_buffer')
+      .delete()
+      .eq('owner_id', ownerId)
+      .lt('expires_at', Date.now());
+  } catch {
+    // silent — UI already hides expired rows
+  }
 }
 
 // ---------- Friendly error messages ----------
@@ -497,7 +575,7 @@ export type AboutContent = {
 export const DEFAULT_ABOUT: AboutContent = {
   developerName: 'Zeus Thunder',
   companyName: 'Thunder Anuprayog',
-  version: 'v19',
+  version: 'v20',
   contactEmail: 'zeusthunder1998@gmail.com',
   donationIntro: 'Feel free to donate 💜 Your support keeps the project going.',
   cryptoName: 'USDT',

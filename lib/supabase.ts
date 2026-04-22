@@ -12,7 +12,10 @@ export function getSupabase(): SupabaseClient {
     }
     client = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: false },
-      realtime: { params: { eventsPerSecond: 10 } },
+      // v20: Higher event rate for snappier cross-device sync.
+      // Default 10 was conservative; 50 gives near-instant updates without
+      // overwhelming the WebSocket on bulk operations.
+      realtime: { params: { eventsPerSecond: 50 } },
     });
   }
   return client;

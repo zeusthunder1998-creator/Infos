@@ -1,6 +1,6 @@
-{
-  "extends": "next/core-web-vitals",
-  "rules": {
-    "react-hooks/exhaustive-deps": "warn"
-  }
-}
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+};
+
+module.exports = nextConfig;

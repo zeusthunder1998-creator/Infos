@@ -1,12 +1,5 @@
-node_modules
-.next
-out
-dist
-.env.local
-.env.production.local
-.env.development.local
-.DS_Store
-*.log
-.vercel
-next-env.d.ts
-*.tsbuildinfo
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+// see https://nextjs.org/docs/app/building-your-application/configuring/typescript for more information.
