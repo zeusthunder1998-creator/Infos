@@ -8,7 +8,7 @@
 // IMPORTANT: bump this version on EVERY release so old caches get cleaned up
 // and users get the new code. Without this, the SW serves the old JS chunks
 // from cache and users miss the update.
-const VERSION = 'v21.4';
+const VERSION = 'v24.1';
 const STATIC_CACHE = `infos-static-${VERSION}`;
 const RUNTIME_CACHE = `infos-runtime-${VERSION}`;
 
@@ -131,4 +131,63 @@ self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
+});
+
+// ---------- v24.0: Web Push handlers ----------
+// Triggered when the push service delivers a payload to this device.
+// Payload format (JSON):
+//   { title: string, body: string, url?: string, tag?: string }
+// We show a notification with click-to-open behavior.
+self.addEventListener('push', (event) => {
+  let data = { title: 'Infos', body: 'You have a new notification.', url: '/' };
+  try {
+    if (event.data) {
+      const parsed = event.data.json();
+      data = { ...data, ...parsed };
+    }
+  } catch (e) {
+    // Fall back to plain text body
+    try { data.body = event.data.text(); } catch {}
+  }
+
+  const options = {
+    body: data.body,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    tag: data.tag || 'infos-notification',
+    // Don't auto-stack — replace previous notification with same tag
+    renotify: !!data.tag,
+    data: { url: data.url || '/' },
+  };
+
+  event.waitUntil(
+    self.registration.showNotification(data.title, options)
+  );
+});
+
+// Click on notification → focus existing tab or open new one
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // Try to focus an existing tab on the same origin
+      for (const client of clientList) {
+        try {
+          const clientUrl = new URL(client.url);
+          if (clientUrl.origin === self.location.origin) {
+            client.focus();
+            // Try to navigate to the target URL within the existing tab
+            if ('navigate' in client) {
+              try { client.navigate(targetUrl); } catch {}
+            }
+            return;
+          }
+        } catch {}
+      }
+      // No existing tab — open a new one
+      return self.clients.openWindow(targetUrl);
+    })
+  );
 });

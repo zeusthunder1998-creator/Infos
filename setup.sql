@@ -1,23 +1,8 @@
 -- ============================================================
--- Infos app — complete database setup (v21.4)
+-- Infos app — complete database setup (v24.0)
 --
 -- IDEMPOTENT: safe to run on fresh project OR existing schema.
--- Will:
---   - Create tables if missing
---   - Add updated_at column if missing
---   - Add "role" column to sub_admins if missing (for co-admin support)
---   - Add "owner_id" column to all tenant tables (for multi-tenancy, v19)
---   - Add "section" column to idpass_entries (for Games | Accounts split, v20)
---   - Add "pinned" column to notices (for pinning to top, v20.7)
---   - Add "deleted_at" columns for trash bin / soft delete (v21.4)
---   - Create about_content table for editable About Us (shared)
---   - Create paste_buffer table (Copy & Paste feature, v20)
---   - Create workspace_branding table (per-workspace branding, v21.1)
---   - (Re)create RLS policies
---   - Add all tables to realtime publication (for live sync)
---   - Create Storage buckets for editable QR + workspace logos
---   - Add Storage policies so app can upload/read assets
--- Does NOT drop existing data.
+-- Adds columns/tables/buckets only if missing. Does NOT drop data.
 -- ============================================================
 
 -- ==============================================================
@@ -179,6 +164,89 @@ create index if not exists idpass_entries_deleted_idx  on idpass_entries(deleted
 create index if not exists notices_deleted_idx         on notices(deleted_at)         where deleted_at is not null;
 
 -- ==============================================================
+-- v22.0: Profile pictures
+-- Adds 'profile_pic_url' to zeus_creds and sub_admins so each user
+-- (Zeus, co-admins, sub-admins) can upload a custom avatar.
+-- Picture itself lives in the new 'profile-pics' Storage bucket.
+-- ==============================================================
+alter table zeus_creds add column if not exists profile_pic_url text;
+alter table sub_admins add column if not exists profile_pic_url text;
+
+-- ==============================================================
+-- v22.2: Device session tracking
+-- Lets Zeus see who's logged in on which devices and force-logout
+-- specific sessions. "Soft auth" — supplements the existing app
+-- without replacing it. See lib/storage.ts for limitations.
+-- ==============================================================
+create table if not exists sessions (
+  id text primary key,
+  device_id text not null,
+  user_id text not null,
+  username text not null,
+  role text not null default 'sub',
+  owner_id text not null default 'zeus',
+  device_label text,
+  user_agent text,
+  platform text,
+  created_at bigint not null,
+  last_seen_at bigint not null,
+  revoked_at bigint
+);
+create index if not exists sessions_user_idx        on sessions(user_id);
+create index if not exists sessions_owner_idx       on sessions(owner_id);
+create index if not exists sessions_last_seen_idx   on sessions(last_seen_at desc);
+create index if not exists sessions_revoked_idx     on sessions(revoked_at) where revoked_at is not null;
+create index if not exists sessions_device_user_idx on sessions(device_id, user_id);
+
+-- ==============================================================
+-- v24.0: Web Push subscriptions
+-- One row per (user_id, endpoint). The endpoint URL uniquely identifies a
+-- browser's push subscription. Users may have multiple devices = multiple rows.
+-- p256dh and auth are encryption keys that the push service uses to sign payloads.
+-- ==============================================================
+create table if not exists push_subscriptions (
+  id text primary key,
+  user_id text not null,
+  username text not null,
+  role text not null default 'sub',
+  owner_id text not null default 'zeus',
+  endpoint text not null unique,           -- URL the push service gives us
+  p256dh text not null,                    -- public encryption key
+  auth text not null,                      -- auth secret
+  device_label text,
+  user_agent text,
+  created_at bigint not null,
+  last_seen_at bigint not null,
+  failed_count int not null default 0      -- consecutive failed sends; high count = stale subscription
+);
+create index if not exists push_subs_user_idx     on push_subscriptions(user_id);
+create index if not exists push_subs_owner_idx    on push_subscriptions(owner_id);
+create index if not exists push_subs_endpoint_idx on push_subscriptions(endpoint);
+
+-- ==============================================================
+-- v24.0: Web Push subscriptions
+-- Each device that opts into push notifications gets a row here.
+-- The Edge Function reads this to know where to send notifications.
+-- ==============================================================
+create table if not exists push_subscriptions (
+  id text primary key,
+  user_id text not null,           -- 'zeus' or sub_admins.id
+  device_id text not null,         -- matches sessions.device_id
+  owner_id text not null default 'zeus',
+  endpoint text not null,          -- the push service URL (Mozilla, Apple, Google FCM, etc)
+  p256dh_key text not null,        -- subscription public key (from PushSubscription)
+  auth_key text not null,          -- subscription auth secret
+  created_at bigint not null,
+  last_used_at bigint not null,
+  user_agent text                  -- for debugging which devices are subscribed
+);
+create unique index if not exists push_sub_endpoint_idx on push_subscriptions(endpoint);
+create index if not exists push_sub_user_idx on push_subscriptions(user_id);
+create index if not exists push_sub_owner_idx on push_subscriptions(owner_id);
+create index if not exists push_sub_device_idx on push_subscriptions(device_id, user_id);
+
+
+-- ==============================================================
 -- v21.1: Workspace branding
 -- Per-workspace customization (workspace name, logo URL, accent color).
 -- One row per workspace, keyed by owner_id. Sub-admins inherit read-only.
@@ -221,6 +289,8 @@ alter table notices          enable row level security;
 alter table paste_buffer     enable row level security;
 alter table about_content    enable row level security;
 alter table workspace_branding enable row level security;
+alter table sessions           enable row level security;
+alter table push_subscriptions enable row level security;
 
 -- Replace any old policies with fresh ones (safe for re-runs)
 drop policy if exists "public read"   on zeus_creds;
@@ -233,6 +303,8 @@ drop policy if exists "public all"    on notices;
 drop policy if exists "public all"    on paste_buffer;
 drop policy if exists "public all"    on about_content;
 drop policy if exists "public all"    on workspace_branding;
+drop policy if exists "public all"    on sessions;
+drop policy if exists "public all"    on push_subscriptions;
 
 create policy "public read"   on zeus_creds       for select using (true);
 create policy "public update" on zeus_creds       for update using (true);
@@ -244,6 +316,8 @@ create policy "public all"    on notices          for all    using (true) with c
 create policy "public all"    on paste_buffer     for all    using (true) with check (true);
 create policy "public all"    on about_content    for all    using (true) with check (true);
 create policy "public all"    on workspace_branding for all  using (true) with check (true);
+create policy "public all"    on sessions         for all    using (true) with check (true);
+create policy "public all"    on push_subscriptions for all  using (true) with check (true);
 
 -- ==============================================================
 -- SECTION 3 — Realtime publication (needed for live sync)
@@ -331,6 +405,16 @@ begin
   end if;
 end $$;
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'sessions'
+  ) then
+    alter publication supabase_realtime add table sessions;
+  end if;
+end $$;
+
 -- ==============================================================
 -- SECTION 4 — Storage bucket for editable QR image
 -- ==============================================================
@@ -398,3 +482,33 @@ create policy "workspace-logos public update"
 create policy "workspace-logos public delete"
   on storage.objects for delete
   using (bucket_id = 'workspace-logos');
+
+-- ==============================================================
+-- SECTION 6 — Storage bucket for profile pictures (v22.0)
+-- ==============================================================
+
+insert into storage.buckets (id, name, public)
+  select 'profile-pics', 'profile-pics', true
+  where not exists (select 1 from storage.buckets where id = 'profile-pics');
+
+drop policy if exists "profile-pics public read"   on storage.objects;
+drop policy if exists "profile-pics public write"  on storage.objects;
+drop policy if exists "profile-pics public update" on storage.objects;
+drop policy if exists "profile-pics public delete" on storage.objects;
+
+create policy "profile-pics public read"
+  on storage.objects for select
+  using (bucket_id = 'profile-pics');
+
+create policy "profile-pics public write"
+  on storage.objects for insert
+  with check (bucket_id = 'profile-pics');
+
+create policy "profile-pics public update"
+  on storage.objects for update
+  using (bucket_id = 'profile-pics')
+  with check (bucket_id = 'profile-pics');
+
+create policy "profile-pics public delete"
+  on storage.objects for delete
+  using (bucket_id = 'profile-pics');

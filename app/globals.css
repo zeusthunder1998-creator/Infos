@@ -143,3 +143,12 @@ input, textarea, button, select { font-family: inherit; }
   .infos-grid2 { grid-template-columns: 1fr !important; }
   .infos-tabs { overflow-x: auto; flex-wrap: nowrap !important; }
 }
+
+/* v23.0: Settings sidebar / pills responsive switch */
+.infos-settings-pills { display: none; }
+.infos-settings-wrapper { flex-direction: row; }
+@media (max-width: 720px) {
+  .infos-settings-sidebar { display: none !important; }
+  .infos-settings-pills { display: flex !important; width: 100%; flex-direction: row; }
+  .infos-settings-wrapper { flex-direction: column !important; }
+}

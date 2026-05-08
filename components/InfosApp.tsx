@@ -17,6 +17,11 @@ import {
   subscribeAll, exportAll, bulkInsert,
   loadAbout, DEFAULT_ABOUT, AboutContent,
   loadBranding, saveBranding, uploadWorkspaceLogo, WorkspaceBranding, DEFAULT_BRANDING,
+  uploadProfilePicture, clearProfilePicture, loadProfilePicture,
+  upsertSession, pingSession, isSessionRevoked, deleteSession,
+  loadAllSessions, revokeSession, renameSession, pruneStaleSessions,
+  DeviceSession,
+  savePushSubscription, deletePushSubscription,
   loadTrashedBackend, loadTrashedGames, loadTrashedIdPass, loadTrashedNotices,
   restoreEntry, purgeEntry, emptyTrash, purgeOldTrash, TRASH_TTL_MS,
 } from '@/lib/storage';
@@ -25,6 +30,48 @@ import { Timestamp, useConfirm, useTheme, SearchBar, Theme, timeAgo, fullDateTim
 import { BulkAssignModal, BulkEntry } from './BulkAssign';
 import { EditGameModal, EditIdPassModal, EditNoticeModal, EditSubAdminModal } from './EditModals';
 import { AboutModal } from './AboutModal';
+
+// v22.2: Device fingerprint helpers.
+// Each browser gets a stable random ID stored in localStorage. This is NOT
+// a cryptographic identity — it's a "this browser" tag that persists across
+// app loads. Cleared if the user wipes localStorage / private browsing.
+function getDeviceId(): string {
+  if (typeof window === 'undefined') return 'ssr';
+  const KEY = 'infos:device_id';
+  try {
+    let id = localStorage.getItem(KEY);
+    if (!id) {
+      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `dev-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem(KEY, id);
+    }
+    return id;
+  } catch {
+    return `dev-fallback-${Date.now()}`;
+  }
+}
+
+// Best-effort detection of the browser/OS combo. Used as a fallback label
+// when the user hasn't named their device. Output examples:
+//   "Chrome on Windows", "Safari on iPhone", "Firefox on Android".
+function detectPlatform(): string {
+  if (typeof navigator === 'undefined') return 'Unknown';
+  const ua = navigator.userAgent || '';
+  let browser = 'Browser';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/OPR\//.test(ua) || /Opera/.test(ua)) browser = 'Opera';
+  else if (/Chrome\//.test(ua) && !/Edg\//.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) browser = 'Safari';
+  let os = 'Device';
+  if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/iPhone|iPad|iPod/.test(ua)) os = /iPad/.test(ua) ? 'iPad' : 'iPhone';
+  else if (/Mac OS X|Macintosh/.test(ua)) os = 'Mac';
+  else if (/Linux/.test(ua)) os = 'Linux';
+  return `${browser} on ${os}`;
+}
 
 // Role helpers
 const isAdminRole = (role: string) => role === 'zeus' || role === 'co';
@@ -195,7 +242,7 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
       let matched: any = null;
       if (username.trim() === zeus.username && password === zeus.password) {
         // Zeus's workspace is always 'zeus'
-        matched = { role: 'zeus', username: zeus.username, ownerId: 'zeus' };
+        matched = { role: 'zeus', username: zeus.username, ownerId: 'zeus', profilePicUrl: zeus.profilePicUrl || null };
       } else {
         // Search ALL workspaces for a matching sub_admin (single global lookup)
         const f = await findSubByCredentials(username.trim(), password);
@@ -204,10 +251,31 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
           // Sub-admin: their workspace is whichever admin created them (f.ownerId)
           const role = f.role === 'co' ? 'co' : 'sub';
           const userWorkspace = role === 'co' ? f.id : f.ownerId;
-          matched = { role, username: f.username, id: f.id, ownerId: userWorkspace };
+          matched = { role, username: f.username, id: f.id, ownerId: userWorkspace, profilePicUrl: f.profilePicUrl || null };
         }
       }
       if (!matched) return setError('Invalid username or password');
+      // v22.2: Register session so admin can see this device + revoke it later.
+      // Best-effort — failure to register doesn't block login.
+      try {
+        const deviceId = getDeviceId();
+        const userIdForSession = matched.role === 'zeus' ? 'zeus' : matched.id;
+        const ownerForSession = matched.ownerId || 'zeus';
+        const sessId = await upsertSession({
+          deviceId,
+          userId: userIdForSession,
+          username: matched.username,
+          role: matched.role,
+          ownerId: ownerForSession,
+          deviceLabel: null,
+          userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+          platform: detectPlatform(),
+        });
+        matched.sessionId = sessId;
+      } catch (err) {
+        console.error('[session register]', err);
+        // Allow login anyway — session tracking is non-critical.
+      }
       setLoggingIn(matched);
     } catch (err: any) {
       setError(friendlyError(err, 'Could not reach server. Check your connection.'));
@@ -252,7 +320,6 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
 // In-app documentation. Sections written in plain language so even non-technical
 // testers/sub-admins can understand. Visible to everyone via the user menu.
 function UserGuideModal({ open, onClose, user }: any) {
-  const isAdmin = isAdminRole(user?.role);
   const isZeusUser = user?.role === 'zeus';
   const isCoAdmin = user?.role === 'co';
   const isSub = user?.role === 'sub';
@@ -270,76 +337,182 @@ function UserGuideModal({ open, onClose, user }: any) {
   const list = { fontSize: '13.5px', lineHeight: 1.7, color: C.textSecondary, marginLeft: '1.25rem', marginBottom: '8px', paddingLeft: 0 } as const;
   const tip = { fontSize: '12.5px', padding: '10px 12px', background: C.accentSoft, color: C.accentText, borderRadius: '8px', border: `1px solid ${C.accent}`, marginBottom: '12px', lineHeight: 1.5 } as const;
 
+  // v22.0: Three completely separate role-specific guides.
+  // Each role sees ONLY their relevant content, no toggling between roles.
+
+  const ZeusGuide = () => (
+    <>
+      <div style={para}>Welcome, main admin. You oversee the entire Infos platform — managing your own workspace and creating co-admins who run their own isolated workspaces.</div>
+
+      <div style={sectionTitle}>🌐 Your platform-level powers</div>
+      <ul style={list}>
+        <li>You manage your own workspace just like a co-admin (create entries, assign to sub-admins, etc.).</li>
+        <li>You create <strong>co-admins</strong> who run their own isolated workspaces. You cannot see inside their workspaces.</li>
+        <li>You edit the shared <strong>About Us</strong> content (visible to everyone on the platform).</li>
+        <li>You can delete co-admin workspaces, which cascade-deletes all their content.</li>
+      </ul>
+
+      <div style={sectionTitle}>📢 Notice tab</div>
+      <div style={para}>Post announcements for your sub-admins. Assign to specific sub-admins or broadcast to all.</div>
+      <div style={tip}>💡 <strong>Pin important notices</strong> using the 📌 button. Pinned notices stay at the top regardless of date.</div>
+
+      <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
+      <div style={para}>Manage links and resources for your sub-admins.</div>
+      <ul style={list}>
+        <li>Tap <strong>+ Add</strong> to create entries.</li>
+        <li>Use <strong>filter pills</strong> to view entries assigned to a specific sub-admin.</li>
+        <li>Drag-reorder entries by long-pressing (when no filter or search is active).</li>
+        <li>Use <strong>select mode</strong> to bulk-delete or bulk-reassign.</li>
+      </ul>
+
+      <div style={sectionTitle}>🔐 Id &amp; Pass tab</div>
+      <div style={para}>Two sub-sections: <strong>🎮 Games</strong> for game credentials, <strong>🔐 Accounts</strong> for general accounts.</div>
+      <ul style={list}>
+        <li>The active sub-tab determines where new entries go.</li>
+        <li>Use <strong>Show / Hide</strong> to reveal the password.</li>
+        <li><strong>Copy</strong> copies username or password to clipboard.</li>
+      </ul>
+
+      <div style={sectionTitle}>👤 Create Admin tab</div>
+      <ul style={list}>
+        <li>Create <strong>co-admins</strong> — they manage their own isolated workspaces with their own sub-admins.</li>
+        <li>Create <strong>sub-admins</strong> for YOUR own workspace.</li>
+        <li>Delete co-admins to remove their entire workspace and all its data (cascade).</li>
+      </ul>
+
+      <div style={sectionTitle}>🔍 Search</div>
+      <div style={para}>The search bar above the tabs searches Notices, Backend, Games, and Id&amp;Pass simultaneously across your workspace.</div>
+
+      <div style={sectionTitle}>🔔 Notification bell</div>
+      <div style={para}>Click the bell to see new content in your workspace. Click ⚙ to choose which categories to be notified about.</div>
+
+      <div style={sectionTitle}>🗑 Trash</div>
+      <div style={para}>Settings → Trash. Deleted entries from Backend, Games, Id&amp;Pass, and Notices are kept here for 30 days. Restore or permanently delete.</div>
+
+      <div style={sectionTitle}>⚙️ Settings</div>
+      <div style={para}>Change your password, switch theme, import/export workspace data, edit About Us.</div>
+
+      <div style={sectionTitle}>🔄 Real-time sync</div>
+      <div style={para}>Changes appear instantly on every signed-in device. No refresh needed.</div>
+    </>
+  );
+
+  const CoAdminGuide = () => (
+    <>
+      <div style={para}>Welcome, co-admin. You run your own isolated workspace inside Infos. You have your own sub-admins, content, and notices — none of which are visible to other co-admins.</div>
+
+      <div style={sectionTitle}>🌐 Your workspace</div>
+      <ul style={list}>
+        <li>You manage your own sub-admins.</li>
+        <li>Your content (notices, entries, credentials) is visible only inside your workspace.</li>
+        <li>You cannot see other co-admins&apos; workspaces, and they cannot see yours.</li>
+        <li>The main admin (Zeus) created your account but cannot see your workspace content.</li>
+      </ul>
+
+      <div style={sectionTitle}>📢 Notice tab</div>
+      <div style={para}>Post announcements for your sub-admins. Assign to specific sub-admins or broadcast to all.</div>
+      <div style={tip}>💡 <strong>Pin important notices</strong> using the 📌 button. Pinned notices stay at the top regardless of date.</div>
+
+      <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
+      <div style={para}>Manage links and resources for your sub-admins.</div>
+      <ul style={list}>
+        <li>Tap <strong>+ Add</strong> to create entries.</li>
+        <li>Use <strong>filter pills</strong> to view entries assigned to a specific sub-admin.</li>
+        <li>Drag-reorder entries by long-pressing (when no filter or search is active).</li>
+        <li>Use <strong>select mode</strong> to bulk-delete or bulk-reassign.</li>
+      </ul>
+
+      <div style={sectionTitle}>🔐 Id &amp; Pass tab</div>
+      <div style={para}>Two sub-sections: <strong>🎮 Games</strong> for game credentials, <strong>🔐 Accounts</strong> for general accounts.</div>
+      <ul style={list}>
+        <li>The active sub-tab determines where new entries go.</li>
+        <li>Use <strong>Show / Hide</strong> to reveal the password.</li>
+        <li><strong>Copy</strong> copies username or password to clipboard.</li>
+      </ul>
+
+      <div style={sectionTitle}>👤 Create Admin tab</div>
+      <div style={para}>Create sub-admins who can view entries assigned to them in your workspace.</div>
+
+      <div style={sectionTitle}>🔍 Search</div>
+      <div style={para}>The search bar above the tabs searches Notices, Backend, Games, and Id&amp;Pass simultaneously inside your workspace.</div>
+
+      <div style={sectionTitle}>🔔 Notification bell</div>
+      <div style={para}>Click the bell to see new content. Click ⚙ to choose which categories to be notified about.</div>
+
+      <div style={sectionTitle}>🗑 Trash</div>
+      <div style={para}>Settings → Trash. Deleted entries are kept for 30 days. Restore or permanently delete.</div>
+
+      <div style={sectionTitle}>⚙️ Settings</div>
+      <div style={para}>Change your password, switch theme, import/export your workspace data.</div>
+
+      <div style={sectionTitle}>🔄 Real-time sync</div>
+      <div style={para}>Changes appear instantly on every signed-in device. No refresh needed.</div>
+    </>
+  );
+
+  const SubAdminGuide = () => (
+    <>
+      <div style={para}>Welcome. You&apos;re a sub-admin in this Infos workspace. You can view content assigned to you, share credentials between your own devices, and read notices from your admin.</div>
+
+      <div style={sectionTitle}>👁 What you can see</div>
+      <ul style={list}>
+        <li>Notices that your admin posted to you (or to all sub-admins).</li>
+        <li>Backend, Games, and Id&amp;Pass entries that your admin assigned to you.</li>
+        <li>Your own Copy &amp; Paste entries (private, visible only to you).</li>
+      </ul>
+      <div style={para}>Anything not assigned to you stays hidden. You cannot see other sub-admins&apos; data.</div>
+
+      <div style={sectionTitle}>📢 Notice tab</div>
+      <div style={para}>Read announcements from your admin. The Notice tab has two sub-tabs:</div>
+      <ul style={list}>
+        <li><strong>📢 Notices</strong> — read-only announcements from your admin</li>
+        <li><strong>📋 Copy &amp; Paste</strong> — your private credential-sharing space</li>
+      </ul>
+
+      <div style={sectionTitle}>📋 Copy &amp; Paste</div>
+      <div style={para}>Quickly share a credential between your own multiple devices. Type the game name, username, password — click <strong>Publish</strong>. The entry appears instantly on every device where you&apos;re signed in. Auto-deletes after 5 minutes.</div>
+      <div style={tip}>💡 The <strong>Copy</strong> button on each entry copies all 3 fields formatted as plain text, ready to paste anywhere.</div>
+
+      <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
+      <div style={para}>View links and resources your admin has assigned to you. Click links to open them. Read-only — only your admin can edit.</div>
+
+      <div style={sectionTitle}>🔐 Id &amp; Pass tab</div>
+      <ul style={list}>
+        <li>You see only credentials assigned to you.</li>
+        <li>Use <strong>Show</strong> to reveal a password, <strong>Copy</strong> to copy it.</li>
+        <li>Two sub-sections: 🎮 Games and 🔐 Accounts.</li>
+      </ul>
+
+      <div style={sectionTitle}>🔍 Search</div>
+      <div style={para}>The search bar above the tabs searches all your assigned content at once.</div>
+
+      <div style={sectionTitle}>🔔 Notification bell</div>
+      <div style={para}>Click the bell to see new content assigned to you. Click ⚙ to choose which categories to be notified about.</div>
+
+      <div style={sectionTitle}>📱 Multiple accounts on one device</div>
+      <div style={para}>You can sign into multiple Infos accounts on the same device. Tap your name in the top-right and use <strong>Add another account</strong>. Switch between them anytime.</div>
+
+      <div style={sectionTitle}>🔄 Real-time sync</div>
+      <div style={para}>New notices and entries appear instantly on every signed-in device. No refresh needed.</div>
+
+      <div style={sectionTitle}>❓ Need help?</div>
+      <div style={para}>Check <strong>About Us</strong> in the same menu where you found this guide for contact info.</div>
+    </>
+  );
+
   return (
     <div className="infos-modal-backdrop" onClick={onClose}
       style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
       <div className="infos-modal" onClick={(e) => e.stopPropagation()}
         style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', maxWidth: '620px', width: '100%', maxHeight: '90vh', boxShadow: 'var(--shadow-pop)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '18px 20px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>📖 User Guide</div>
+          <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>
+            📖 User Guide{isZeusUser ? ' — Main Admin' : isCoAdmin ? ' — Co-admin' : ' — Sub-admin'}
+          </div>
           <button onClick={onClose} type="button" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', color: C.textTertiary, lineHeight: 1, padding: '4px 8px', borderRadius: '4px' }}>×</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 20px 24px' }}>
-
-          <div style={para}>Welcome! Here&apos;s how to use Infos. Sections are tailored to your account type ({isZeusUser ? 'main admin' : isCoAdmin ? 'co-admin' : 'sub-admin'}).</div>
-
-          <div style={sectionTitle}>👥 Account roles</div>
-          <ul style={list}>
-            <li><strong>Main admin (Zeus):</strong> manages the whole platform, creates co-admins.</li>
-            <li><strong>Co-admin:</strong> runs their own isolated workspace with their own sub-admins. Cannot see other workspaces.</li>
-            <li><strong>Sub-admin:</strong> read-only access to entries assigned to them. Can use Copy &amp; Paste to share credentials between their own devices.</li>
-          </ul>
-
-          <div style={sectionTitle}>📢 Notice tab</div>
-          <div style={para}>Post important announcements for your sub-admins. Each notice can be assigned to specific sub-admins or broadcast to all.</div>
-          {isAdmin && <div style={tip}>💡 <strong>Pin important notices</strong> using the 📌 button. Pinned notices stay at the top of the list regardless of date.</div>}
-          {isSub && <div style={tip}>💡 The <strong>📋 Copy &amp; Paste</strong> sub-tab is your private credential sharing space. Anything you publish there is visible only to you, on every device you&apos;re signed in on. Auto-deletes after 5 minutes.</div>}
-
-          <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
-          <div style={para}>Manage links and resources organized by game name and short tag. Each entry can be assigned to specific sub-admins.</div>
-          {isAdmin && <ul style={list}>
-            <li>Tap <strong>+ Add</strong> at the top to create entries.</li>
-            <li>Use the <strong>filter pills</strong> to view entries assigned to a specific sub-admin.</li>
-            <li>Drag-reorder entries by long-pressing and dragging (when no filter or search is active).</li>
-            <li>Use the <strong>select mode</strong> button to bulk-delete or bulk-reassign multiple entries.</li>
-          </ul>}
-
-          <div style={sectionTitle}>🔐 Id &amp; Pass tab</div>
-          <div style={para}>Two sub-sections: <strong>🎮 Games</strong> for game credentials, <strong>🔐 Accounts</strong> for general accounts (Facebook, Gmail, VPN, etc.).</div>
-          {isAdmin && <ul style={list}>
-            <li>The active sub-tab determines where new entries go.</li>
-            <li>Use <strong>Show / Hide</strong> on each entry to reveal the password.</li>
-            <li>Click <strong>Copy</strong> to copy username or password to clipboard.</li>
-          </ul>}
-          {isSub && <ul style={list}>
-            <li>You see only entries assigned to you.</li>
-            <li>Use the <strong>Show</strong> button to reveal a password, <strong>Copy</strong> to copy it.</li>
-          </ul>}
-
-          {isSub && (<>
-            <div style={sectionTitle}>📋 Copy &amp; Paste (sub-admins only)</div>
-            <div style={para}>Quickly share a credential between your own multiple devices. Type the game name, username, password — click <strong>Publish</strong>. The entry appears instantly on every device where you&apos;re signed in. Auto-deletes after 5 minutes.</div>
-            <div style={tip}>💡 The <strong>Copy</strong> button on each entry copies all 3 fields formatted as plain text, ready to paste anywhere.</div>
-          </>)}
-
-          {isAdmin && (<>
-            <div style={sectionTitle}>👤 Create Admin tab (admins only)</div>
-            <div style={para}>Manage sub-admins for your workspace. Sub-admins log in with the username/password you set here.</div>
-            {isZeusUser && <div style={para}>You can also create <strong>co-admins</strong> here — they manage their own isolated workspace with their own sub-admins.</div>}
-          </>)}
-
-          <div style={sectionTitle}>⚙️ Settings</div>
-          <div style={para}>Change your password, switch theme (light/dark/auto), or import/export your workspace data (admins only).</div>
-
-          <div style={sectionTitle}>📱 Multiple accounts on one device</div>
-          <div style={para}>You can sign into multiple Infos accounts on the same device. Tap your name in the top-right and use <strong>Add another account</strong>. Switch between them anytime from the same menu.</div>
-
-          <div style={sectionTitle}>🔄 Real-time sync</div>
-          <div style={para}>Changes made on one device appear on all your other devices automatically. No refresh needed. If you don&apos;t see something, the app re-syncs whenever you bring it back from background.</div>
-
-          <div style={sectionTitle}>❓ Need help?</div>
-          <div style={para}>Tap <strong>About Us</strong> in the same menu where you found this guide — the contact email is listed there.</div>
-
+          {isZeusUser ? <ZeusGuide /> : isCoAdmin ? <CoAdminGuide /> : isSub ? <SubAdminGuide /> : null}
         </div>
       </div>
     </div>
@@ -726,6 +899,424 @@ function TrashModal({ open, onClose, workspaceId, onAfterChange }: any) {
   );
 }
 
+// ---------------- Devices manager modal (v22.2 — Zeus only) ----------------
+// Lists every active session across the platform and lets Zeus revoke any
+// individual session. Auto-refreshes via realtime + manual reload button.
+//
+// Display:
+//   - Grouped by user (Zeus, then co-admins, then sub-admins)
+//   - Each session shows: device label OR auto-detected platform, last seen
+//     time, current-device tag if it's THIS browser, revoke button
+//   - Search filter across username and device label/platform
+function DevicesModal({ open, onClose, currentSessionId }: any) {
+  const [sessions, setSessions] = useState<DeviceSession[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState('');
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [confirmEl, confirm] = useConfirm();
+
+  const reload = useCallback(async () => {
+    if (!open) return;
+    setLoading(true);
+    try {
+      const list = await loadAllSessions(false); // active only
+      setSessions(list);
+    } finally { setLoading(false); }
+  }, [open]);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  // Realtime: auto-refresh when sessions table changes (new login, revoke, ping)
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    const unsub = subscribeAll(['sessions'], () => { if (alive) reload(); });
+    return () => { alive = false; unsub(); };
+  }, [open, reload]);
+
+  // Esc to close
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
+  // Filter
+  const filtered = useMemo(() => {
+    if (!q.trim()) return sessions;
+    const search = q.trim().toLowerCase();
+    return sessions.filter((s) =>
+      s.username.toLowerCase().includes(search) ||
+      (s.deviceLabel || '').toLowerCase().includes(search) ||
+      (s.platform || '').toLowerCase().includes(search)
+    );
+  }, [sessions, q]);
+
+  // Group by user (then sort within group by last_seen desc)
+  const grouped = useMemo(() => {
+    const map = new Map<string, { username: string; role: string; ownerId: string; sessions: DeviceSession[] }>();
+    for (const s of filtered) {
+      const key = `${s.role}:${s.userId}`;
+      if (!map.has(key)) map.set(key, { username: s.username, role: s.role, ownerId: s.ownerId, sessions: [] });
+      map.get(key)!.sessions.push(s);
+    }
+    // Order: Zeus first, then co-admins, then sub-admins, alpha within
+    const order = (r: string) => r === 'zeus' ? 0 : r === 'co' ? 1 : 2;
+    return Array.from(map.values()).sort((a, b) => {
+      const d = order(a.role) - order(b.role);
+      if (d !== 0) return d;
+      return a.username.localeCompare(b.username);
+    });
+  }, [filtered]);
+
+  if (!open) return null;
+
+  const handleRevoke = async (s: DeviceSession) => {
+    const isCurrent = s.id === currentSessionId;
+    const ok = await confirm({
+      title: isCurrent ? 'Sign yourself out from this device?' : `Sign ${s.username} out?`,
+      message: isCurrent
+        ? 'You will be logged out of THIS device. You can sign back in afterward.'
+        : `${s.username}'s session on "${s.deviceLabel || s.platform || 'this device'}" will be terminated. They\u2019ll be signed out within ~30 seconds.`,
+      confirmLabel: 'Sign out',
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy((prev) => ({ ...prev, [s.id]: true }));
+    try {
+      await revokeSession(s.id);
+      notify(isCurrent ? 'Signing out…' : `${s.username} will be signed out shortly.`, 'success');
+      reload();
+    } catch (e: any) { notify(friendlyError(e)); }
+    finally { setBusy((prev) => ({ ...prev, [s.id]: false })); }
+  };
+
+  const startRename = (s: DeviceSession) => {
+    setRenameId(s.id);
+    setRenameValue(s.deviceLabel || '');
+  };
+
+  const saveRename = async (s: DeviceSession) => {
+    setBusy((prev) => ({ ...prev, [s.id]: true }));
+    try {
+      await renameSession(s.id, renameValue);
+      setRenameId(null); setRenameValue('');
+      notify('Device renamed.', 'success');
+      reload();
+    } catch (e: any) { notify(friendlyError(e)); }
+    finally { setBusy((prev) => ({ ...prev, [s.id]: false })); }
+  };
+
+  const totalUsers = grouped.length;
+  const totalDevices = filtered.length;
+
+  return (
+    <div className="infos-modal-backdrop" onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      {confirmEl}
+      <div className="infos-modal" onClick={(e) => e.stopPropagation()}
+        style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', maxWidth: '700px', width: '100%', maxHeight: '90vh', boxShadow: 'var(--shadow-pop)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+          <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>📱 Devices &amp; sessions</div>
+          <button onClick={onClose} type="button"
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', color: C.textTertiary, padding: '4px 8px' }}>×</button>
+        </div>
+
+        <div style={{ padding: '10px 18px 8px', borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: '11.5px', color: C.textTertiary, marginBottom: '8px' }}>
+            {loading ? 'Loading…' : `${totalDevices} active ${totalDevices === 1 ? 'device' : 'devices'} across ${totalUsers} ${totalUsers === 1 ? 'user' : 'users'}`}
+            <span style={{ marginLeft: '6px' }}>· Force-logout takes effect within ~30 seconds.</span>
+          </div>
+          <input
+            type="text" value={q} onChange={(e) => setQ(e.target.value)}
+            placeholder="Search by username or device…"
+            style={{ width: '100%', padding: '8px 12px', fontSize: '13px', border: `1px solid ${C.border}`, borderRadius: '8px', background: C.softBg, color: C.textPrimary, fontFamily: 'inherit' }}
+          />
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          {loading && sessions.length === 0 ? (
+            <div style={{ padding: '14px' }}><Skeleton lines={4} /></div>
+          ) : grouped.length === 0 ? (
+            <div style={{ padding: '40px 20px' }}>
+              <EmptyState icon="📱" title={q.trim() ? 'No matches' : 'No active sessions'} hint={q.trim() ? 'Try a different search.' : 'When users sign in, their devices appear here.'} />
+            </div>
+          ) : (
+            grouped.map((group) => (
+              <div key={`${group.role}:${group.ownerId}:${group.username}`}>
+                <div style={{
+                  fontSize: '11px', fontWeight: 700, color: C.textTertiary,
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                  padding: '12px 18px 6px',
+                  background: C.softBg,
+                  borderTop: `1px solid ${C.border}`,
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
+                }}>
+                  <span>
+                    {group.username}
+                    <span style={{ marginLeft: '6px', fontWeight: 500, color: C.textTertiary, textTransform: 'none', letterSpacing: 0 }}>
+                      ({group.role === 'zeus' ? 'main admin' : group.role === 'co' ? 'co-admin' : 'sub-admin'})
+                    </span>
+                  </span>
+                  <span style={{ fontWeight: 500, fontSize: '10px' }}>
+                    {group.sessions.length} {group.sessions.length === 1 ? 'device' : 'devices'}
+                  </span>
+                </div>
+                {group.sessions.map((s) => {
+                  const isCurrent = s.id === currentSessionId;
+                  const isRenaming = renameId === s.id;
+                  const itemBusy = !!busy[s.id];
+                  return (
+                    <div key={s.id} style={{
+                      padding: '12px 18px',
+                      borderTop: `1px solid ${C.border}`,
+                      display: 'flex', alignItems: 'flex-start', gap: '10px',
+                      flexWrap: 'wrap',
+                    }}>
+                      <div style={{ flex: 1, minWidth: '180px' }}>
+                        {isRenaming ? (
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                            <input
+                              type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
+                              placeholder="e.g. Office laptop"
+                              style={{ flex: 1, minWidth: '140px', padding: '5px 8px', fontSize: '12.5px', border: `1px solid ${C.borderStrong}`, borderRadius: '6px', background: C.cardBg, color: C.textPrimary, fontFamily: 'inherit' }}
+                              maxLength={40}
+                              autoFocus
+                            />
+                            <Btn onClick={() => saveRename(s)} disabled={itemBusy} primary style={{ fontSize: '11.5px', padding: '4px 10px' }}>Save</Btn>
+                            <Btn onClick={() => { setRenameId(null); setRenameValue(''); }} style={{ fontSize: '11.5px', padding: '4px 10px' }}>Cancel</Btn>
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: '13.5px', fontWeight: 600, marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            {s.deviceLabel || s.platform || 'Unknown device'}
+                            {isCurrent && (
+                              <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 7px', borderRadius: '8px', background: C.accentSoft, color: C.accentText, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                                This device
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {!isRenaming && s.deviceLabel && s.platform && (
+                          <div style={{ fontSize: '11.5px', color: C.textTertiary }}>{s.platform}</div>
+                        )}
+                        <div style={{ fontSize: '11px', color: C.textTertiary, marginTop: '3px' }}>
+                          Signed in {timeAgo(s.createdAt)} · Last seen {timeAgo(s.lastSeenAt)}
+                        </div>
+                      </div>
+                      {!isRenaming && (
+                        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                          <Btn onClick={() => startRename(s)} disabled={itemBusy} style={{ fontSize: '11.5px', padding: '4px 10px' }}>Rename</Btn>
+                          <Btn danger onClick={() => handleRevoke(s)} disabled={itemBusy} style={{ fontSize: '11.5px', padding: '4px 10px' }}>
+                            {isCurrent ? 'Sign out' : 'Force out'}
+                          </Btn>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------- What Changed This Week modal (v22.1) ----------------
+// Activity feed showing the last 7 days of changes in the user's workspace,
+// grouped by day. Useful for periodic reviews ("what did I miss?").
+//
+// Visibility:
+//   - Admins (Zeus, co-admin): everything in their workspace
+//   - Sub-admins: only items assigned/visible to them
+// Items: notices, backend, games, idpass entries (no deleted items, no pastes)
+// Each item shows: emoji icon, title, "created" or "updated" badge, time ago
+// Tap an item → navigate to that tab + close modal
+function WhatChangedModal({ open, onClose, user, notices, backend, games, idpass, onNavigate }: any) {
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
+  // Build the activity list — filtered by user visibility, last 7 days,
+  // sorted desc by touchedAt timestamp.
+  const grouped = useMemo(() => {
+    if (!open) return null;
+    const isAdmin = isAdminRole(user.role);
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - sevenDaysMs;
+
+    type Item = {
+      id: string;
+      type: 'notice' | 'backend' | 'games' | 'idpass';
+      title: string;
+      subtitle: string;
+      touchedAt: number;
+      isUpdate: boolean;
+    };
+
+    const out: Item[] = [];
+    const touchedAt = (r: any) => Math.max(Number(r.updatedAt) || 0, Number(r.createdAt) || 0);
+    // Treat as update if updatedAt is more than 2 seconds after createdAt
+    // (small grace for round-trip timing on creation).
+    const isUpdate = (r: any) => !!(r.updatedAt && r.updatedAt > (r.createdAt + 2000));
+
+    // Notices
+    (notices || []).forEach((n: any) => {
+      if (!isAdmin && !isVisibleToSub(n.recipients, user.id)) return;
+      const t = touchedAt(n);
+      if (t < cutoff) return;
+      out.push({
+        id: `notice:${n.id}`, type: 'notice',
+        title: n.title || '(untitled notice)',
+        subtitle: '📢 Notice',
+        touchedAt: t, isUpdate: isUpdate(n),
+      });
+    });
+
+    const collectEntries = (arr: any[], type: 'backend' | 'games' | 'idpass', label: string, getName: (e: any) => string) => {
+      (arr || []).forEach((e: any) => {
+        if (!isAdmin && !isVisibleToSub(e.assignees, user.id)) return;
+        const t = touchedAt(e);
+        if (t < cutoff) return;
+        out.push({
+          id: `${type}:${e.id}`, type,
+          title: getName(e),
+          subtitle: label,
+          touchedAt: t, isUpdate: isUpdate(e),
+        });
+      });
+    };
+    collectEntries(backend, 'backend', '🔧 Backend entry', (e) => e.gameName || '(unnamed)');
+    collectEntries(games, 'games', '🎮 Game entry', (e) => e.gameName || '(unnamed)');
+    collectEntries(idpass, 'idpass', '🔐 Id & Pass entry', (e) => e.game || '(unnamed)');
+
+    out.sort((a, b) => b.touchedAt - a.touchedAt);
+
+    // Group by day bucket (Today, Yesterday, "X days ago"). Bucket key is days
+    // ago calculated from local midnight so timezone is consistent.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const todayMs = startOfToday.getTime();
+
+    const buckets: Record<string, { label: string; items: Item[] }> = {};
+    const order: string[] = [];
+
+    for (const item of out) {
+      const itemDate = new Date(item.touchedAt);
+      itemDate.setHours(0, 0, 0, 0);
+      const daysAgo = Math.floor((todayMs - itemDate.getTime()) / (24 * 60 * 60 * 1000));
+      const key = `d${daysAgo}`;
+      if (!buckets[key]) {
+        const label = daysAgo === 0 ? 'Today'
+                    : daysAgo === 1 ? 'Yesterday'
+                    : `${daysAgo} days ago`;
+        buckets[key] = { label, items: [] };
+        order.push(key);
+      }
+      buckets[key].items.push(item);
+    }
+
+    return { groups: order.map((k) => buckets[k]), total: out.length };
+  }, [open, user, notices, backend, games, idpass]);
+
+  if (!open) return null;
+  const totalCount = grouped?.total ?? 0;
+
+  const itemIcon = (t: string) => t === 'notice' ? '📢' : t === 'backend' ? '🔧' : t === 'games' ? '🎮' : '🔐';
+
+  const handleClick = (item: any) => {
+    const tab = item.type === 'backend' ? 'backend' : item.type === 'games' ? 'games' : item.type === 'idpass' ? 'idpass' : 'notice';
+    onNavigate(tab);
+    onClose();
+  };
+
+  return (
+    <div className="infos-modal-backdrop" onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div className="infos-modal" onClick={(e) => e.stopPropagation()}
+        style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', maxWidth: '600px', width: '100%', maxHeight: '85vh', boxShadow: 'var(--shadow-pop)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>📅 What changed this week</div>
+          <button onClick={onClose} type="button"
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', color: C.textTertiary, padding: '4px 8px' }}>×</button>
+        </div>
+
+        <div style={{ padding: '8px 18px', borderBottom: `1px solid ${C.border}`, fontSize: '12px', color: C.textTertiary }}>
+          {totalCount === 0
+            ? 'No activity in the last 7 days.'
+            : `${totalCount} ${totalCount === 1 ? 'change' : 'changes'} in the last 7 days`}
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 12px' }}>
+          {totalCount === 0 ? (
+            <div style={{ padding: '40px 20px' }}>
+              <EmptyState icon="📅" title="Quiet week" hint="Nothing has been added or updated in the last 7 days." />
+            </div>
+          ) : (
+            grouped!.groups.map((group, gi) => (
+              <div key={gi}>
+                <div style={{
+                  fontSize: '11px', fontWeight: 700, color: C.textTertiary,
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                  padding: '14px 18px 6px',
+                  background: C.softBg,
+                  borderTop: gi > 0 ? `1px solid ${C.border}` : 'none',
+                }}>
+                  {group.label} · {group.items.length} {group.items.length === 1 ? 'change' : 'changes'}
+                </div>
+                {group.items.map((item) => (
+                  <button key={item.id} onClick={() => handleClick(item)} type="button"
+                    style={{
+                      display: 'flex', alignItems: 'flex-start', gap: '10px',
+                      width: '100%', textAlign: 'left',
+                      padding: '11px 18px',
+                      borderTop: `1px solid ${C.border}`,
+                      background: 'transparent',
+                      border: 'none', borderBottom: 'none', borderLeft: 'none', borderRight: 'none',
+                      cursor: 'pointer',
+                      color: C.textPrimary,
+                    }}
+                    onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+                    onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+                    <span style={{ fontSize: '15px', flexShrink: 0, marginTop: '1px' }}>{itemIcon(item.type)}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '13.5px', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {item.title}
+                        </span>
+                        <span style={{
+                          fontSize: '10px', fontWeight: 700,
+                          padding: '1px 7px', borderRadius: '8px',
+                          background: item.isUpdate ? C.accentSoft : C.successSoft,
+                          color: item.isUpdate ? C.accentText : C.success,
+                          textTransform: 'uppercase', letterSpacing: '0.04em',
+                          flexShrink: 0,
+                        }}>
+                          {item.isUpdate ? 'Updated' : 'New'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11.5px', color: C.textTertiary, marginTop: '2px' }}>
+                        {item.subtitle} · {timeAgo(item.touchedAt)}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---------------- Notification Bell (v21.2) ----------------
 // In-app notification system. No backend infrastructure needed.
 // Tracks "last seen" timestamp per (user, workspace) in localStorage.
@@ -799,6 +1390,121 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
       try { localStorage.setItem(prefsKey, JSON.stringify(next)); } catch {}
       return next;
     });
+  };
+
+  // v24.0: Web Push subscription state.
+  //   - 'unsupported' = browser/device doesn't support web push (or running in TWA)
+  //   - 'denied'      = user explicitly blocked notifications in browser
+  //   - 'unsubscribed' = supported, permitted, but no active subscription
+  //   - 'subscribed'   = active push subscription registered with server
+  //   - 'busy'        = mid-operation
+  type PushState = 'unsupported' | 'denied' | 'unsubscribed' | 'subscribed' | 'busy';
+  const [pushState, setPushState] = useState<PushState>('unsupported');
+  const [pushMsg, setPushMsg] = useState<string>('');
+
+  // Detect support + current subscription on mount.
+  useEffect(() => {
+    let cancelled = false;
+    const detect = async () => {
+      if (typeof window === 'undefined') return;
+      // Web Push needs Service Workers + PushManager + Notification API
+      if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+        if (!cancelled) setPushState('unsupported');
+        return;
+      }
+      // Detect explicit denial
+      if (Notification.permission === 'denied') {
+        if (!cancelled) setPushState('denied');
+        return;
+      }
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (!cancelled) setPushState(sub ? 'subscribed' : 'unsubscribed');
+      } catch {
+        if (!cancelled) setPushState('unsupported');
+      }
+    };
+    detect();
+    return () => { cancelled = true; };
+  }, [user?.id]);
+
+  // Helper to convert base64url → Uint8Array (required by PushManager)
+  const urlBase64ToUint8Array = (b64: string): Uint8Array => {
+    const padding = '='.repeat((4 - b64.length % 4) % 4);
+    const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const arr = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+    return arr;
+  };
+
+  const subscribePush = async () => {
+    setPushMsg('');
+    setPushState('busy');
+    try {
+      const vapidPublic = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!vapidPublic) {
+        setPushMsg('Server not configured for push (no VAPID key).');
+        setPushState('unsubscribed');
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setPushMsg(permission === 'denied' ? 'Notifications blocked by browser.' : 'Permission not granted.');
+        setPushState(permission === 'denied' ? 'denied' : 'unsubscribed');
+        return;
+      }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublic),
+      });
+      // Extract keys
+      const json: any = sub.toJSON();
+      const p256dh = json.keys?.p256dh || '';
+      const authK = json.keys?.auth || '';
+      if (!p256dh || !authK) throw new Error('Subscription missing keys');
+
+      const userId = user.role === 'zeus' ? 'zeus' : user.id;
+      await savePushSubscription({
+        userId,
+        username: user.username || '',
+        role: user.role,
+        ownerId: workspaceId,
+        endpoint: sub.endpoint,
+        p256dh: p256dh,
+        auth: authK,
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+      });
+      setPushState('subscribed');
+      setPushMsg('');
+      notify('Push notifications enabled on this device.', 'success');
+    } catch (err: any) {
+      console.error('[push subscribe]', err);
+      setPushMsg(err?.message || 'Could not enable push notifications.');
+      setPushState('unsubscribed');
+    }
+  };
+
+  const unsubscribePush = async () => {
+    setPushMsg('');
+    setPushState('busy');
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        const endpoint = sub.endpoint;
+        await sub.unsubscribe();
+        await deletePushSubscription(endpoint);
+      }
+      setPushState('unsubscribed');
+      notify('Push notifications disabled on this device.', 'success');
+    } catch (err: any) {
+      console.error('[push unsubscribe]', err);
+      setPushMsg(err?.message || 'Could not disable push notifications.');
+      setPushState('subscribed');
+    }
   };
 
   // Click outside to close dropdown
@@ -916,10 +1622,45 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
             </div>
           </div>
 
-          {/* v21.4: Notification preferences panel — collapsible */}
+          {/* v21.4: Notification preferences panel — collapsible.
+              v24.0: Push notifications toggle at the top. */}
           {showPrefs && (
             <div style={{ padding: '10px 14px 12px', borderBottom: `1px solid ${C.border}`, background: C.softBg }}>
-              <div style={{ fontSize: '11px', fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Notify me about</div>
+              {/* v24.0: Web Push toggle */}
+              <div style={{ marginBottom: '12px', paddingBottom: '12px', borderBottom: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Push notifications</div>
+                {pushState === 'unsupported' && (
+                  <div style={{ fontSize: '12px', color: C.textTertiary, lineHeight: 1.5 }}>
+                    Not supported on this device or app install. Web Push works on Chrome/Edge/Firefox and on installed PWAs (iOS 16.4+).
+                  </div>
+                )}
+                {pushState === 'denied' && (
+                  <div style={{ fontSize: '12px', color: C.danger, lineHeight: 1.5 }}>
+                    Notifications blocked by your browser. Allow them in your browser settings to enable.
+                  </div>
+                )}
+                {pushState === 'unsubscribed' && (
+                  <div>
+                    <div style={{ fontSize: '12.5px', color: C.textSecondary, marginBottom: '8px', lineHeight: 1.4 }}>
+                      Get notified when something new is added — even when the app is closed.
+                    </div>
+                    <Btn primary onClick={subscribePush} style={{ fontSize: '12px', padding: '6px 12px' }}>Enable push notifications</Btn>
+                  </div>
+                )}
+                {pushState === 'subscribed' && (
+                  <div>
+                    <div style={{ fontSize: '12.5px', color: C.success, marginBottom: '8px', lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>✓</span> <span>Push enabled on this device</span>
+                    </div>
+                    <Btn onClick={unsubscribePush} style={{ fontSize: '12px', padding: '6px 12px' }}>Disable</Btn>
+                  </div>
+                )}
+                {pushState === 'busy' && (
+                  <div style={{ fontSize: '12px', color: C.textTertiary }}>Working…</div>
+                )}
+                {pushMsg && <div style={{ fontSize: '11.5px', color: C.danger, marginTop: '8px' }}>{pushMsg}</div>}
+              </div>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>In-app notifications</div>
               {[
                 { key: 'notice' as const, label: '📢 Notices' },
                 { key: 'backend' as const, label: '🔧 Backend entries' },
@@ -1006,7 +1747,7 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
 }
 
 // ---------------- Account switcher (with About, Settings, Appearance) ----------------
-function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, onSignOut, onSignOutAll, onOpenAbout, onOpenSettings, onOpenGuide, onOpenSearch, theme, setTheme }: any) {
+function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, onSignOut, onSignOutAll, onOpenAbout, onOpenSettings, onOpenGuide, onOpenSearch, onOpenWhatChanged, onOpenDevices, theme, setTheme }: any) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1019,11 +1760,24 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
   if (!active) return null;
   const avatarBg = (u: any) => u.role === 'zeus' ? C.accent : u.role === 'co' ? '#e17b4a' : '#888780';
   const roleLabel = (u: any) => u.role === 'zeus' ? 'Main admin' : u.role === 'co' ? 'Co-admin' : 'Sub-admin';
-  const avatar = (u: any, size = 28) => (
-    <span style={{ width: size, height: size, borderRadius: '50%', background: avatarBg(u), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size >= 28 ? '12px' : '10.5px', fontWeight: 600, flexShrink: 0 }}>
-      {u.username.charAt(0).toUpperCase()}
-    </span>
-  );
+  // v22.0: Avatar shows profile picture if set, otherwise the colored initial.
+  const avatar = (u: any, size = 28) => {
+    if (u.profilePicUrl) {
+      return (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={u.profilePicUrl}
+          alt=""
+          style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: `1px solid ${C.border}` }}
+        />
+      );
+    }
+    return (
+      <span style={{ width: size, height: size, borderRadius: '50%', background: avatarBg(u), color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size >= 28 ? '12px' : '10.5px', fontWeight: 600, flexShrink: 0 }}>
+        {u.username.charAt(0).toUpperCase()}
+      </span>
+    );
+  };
 
   const showSettings = isAdminRole(user.role);
 
@@ -1038,13 +1792,8 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
       </button>
       {open && (
         <div className="infos-dropdown" style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: '280px', background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '12px', boxShadow: 'var(--shadow-pop)', zIndex: 1000, overflow: 'hidden' }}>
-          {/* 1. About Us / User Guide / Settings / Search */}
+          {/* 1. About Us / User Guide / Settings — v22.0: Search moved to main page above tabs */}
           <div style={{ padding: '6px 4px', borderBottom: `1px solid ${C.border}` }}>
-            <button onClick={() => { onOpenSearch(); setOpen(false); }} style={menuBtnStyle}
-              onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
-              <span>🔍</span> <span>Search everything</span>
-            </button>
             <button onClick={() => { onOpenAbout(); setOpen(false); }} style={menuBtnStyle}
               onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
               onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
@@ -1055,6 +1804,20 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
               onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
               <span>📖</span> <span>User Guide</span>
             </button>
+            {/* v22.1: What changed this week */}
+            <button onClick={() => { onOpenWhatChanged && onOpenWhatChanged(); setOpen(false); }} style={menuBtnStyle}
+              onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+              onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+              <span>📅</span> <span>What changed this week</span>
+            </button>
+            {/* v22.2: Devices & sessions — Zeus only */}
+            {user.role === 'zeus' && (
+              <button onClick={() => { onOpenDevices && onOpenDevices(); setOpen(false); }} style={menuBtnStyle}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+                <span>📱</span> <span>Devices &amp; sessions</span>
+              </button>
+            )}
             {showSettings && (
               <button onClick={() => { onOpenSettings(); setOpen(false); }} style={menuBtnStyle}
                 onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
@@ -2423,7 +3186,7 @@ function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, no
 const CreateAdminPanel = memo(CreateAdminPanelInner);
 
 // ---------------- Settings modal (Zeus: change creds + backup. Co-admin: change own password + backup) ----------------
-function SettingsModal({ open, onClose, user, onForceLogout, branding, setBranding, reloadBranding, onOpenGuide, onOpenTrash }: any) {
+function SettingsModal({ open, onClose, user, onForceLogout, onOpenGuide, onOpenTrash, onOpenDevices, onOpenAbout, onPicChange, theme, setTheme }: any) {
   const isZeusUser = isZeus(user.role);
   const isAdmin = isAdminRole(user.role);
   const workspaceId = workspaceIdForUser(user);
@@ -2437,21 +3200,76 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
   const [exporting, setExporting] = useState(false);
   const [importStatus, setImportStatus] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  const csvFileRef = useRef<HTMLInputElement>(null);                 // v21.4: CSV import
-  const [csvStatus, setCsvStatus] = useState('');
-  const [csvImporting, setCsvImporting] = useState(false);
   const [confirmEl, confirm] = useConfirm();
 
-  // v21.1: Workspace branding form state. Local copies of the parent's values
-  // so editing doesn't immediately apply globally — user must click Save.
-  const [brandName, setBrandName] = useState<string>('');
-  const [brandColor, setBrandColor] = useState<string>('');
-  const [brandLogoFile, setBrandLogoFile] = useState<File | null>(null);
-  const [brandLogoPreview, setBrandLogoPreview] = useState<string>('');  // local object-url preview before upload
-  const [brandSaving, setBrandSaving] = useState(false);
-  const [brandMsg, setBrandMsg] = useState('');
-  const [brandErr, setBrandErr] = useState('');
-  const logoInputRef = useRef<HTMLInputElement>(null);
+  // v23.0: Sidebar navigation. Each option in the sidebar maps to a section
+  // key. The right pane shows only the selected section. On mobile, the
+  // sidebar collapses into a horizontal tab bar.
+  const [activeSection, setActiveSection] = useState<string>('profile');
+
+  // v22.0: Profile picture state. Shows current pic + upload/remove controls.
+  const [picUploading, setPicUploading] = useState(false);
+  const [picMsg, setPicMsg] = useState('');
+  const [picErr, setPicErr] = useState('');
+  const picInputRef = useRef<HTMLInputElement>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const onPickProfilePic = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setPicErr('Profile picture must be smaller than 2 MB');
+      e.target.value = '';
+      return;
+    }
+    setPicErr(''); setPicMsg(''); setPicUploading(true);
+    // Optimistic local preview while upload runs
+    const localUrl = URL.createObjectURL(file);
+    setPreviewUrl(localUrl);
+    try {
+      const url = await uploadProfilePicture(file, { id: user.id || 'zeus', role: user.role }, user.profilePicUrl || undefined);
+      setPicMsg('Profile picture updated.');
+      setPreviewUrl(null);
+      try { URL.revokeObjectURL(localUrl); } catch {}
+      // Notify parent so the activeUser state updates everywhere
+      onPicChange && onPicChange(url);
+    } catch (err: any) {
+      setPicErr(friendlyError(err, 'Upload failed. Try a smaller image.'));
+      setPreviewUrl(null);
+      try { URL.revokeObjectURL(localUrl); } catch {}
+    } finally {
+      setPicUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const onRemoveProfilePic = async () => {
+    if (!user.profilePicUrl) return;
+    const ok = await confirm({ title: 'Remove profile picture?', message: 'Your default avatar will be shown instead.', confirmLabel: 'Remove', danger: true });
+    if (!ok) return;
+    setPicErr(''); setPicMsg(''); setPicUploading(true);
+    try {
+      await clearProfilePicture({ id: user.id || 'zeus', role: user.role }, user.profilePicUrl);
+      setPicMsg('Profile picture removed.');
+      onPicChange && onPicChange(null);
+    } catch (err: any) {
+      setPicErr(friendlyError(err));
+    } finally {
+      setPicUploading(false);
+    }
+  };
+
+  // v22.0: Refresh profile pic from DB on modal open in case it changed elsewhere
+  useEffect(() => {
+    if (!open) return;
+    setPicMsg(''); setPicErr(''); setPreviewUrl(null);
+    loadProfilePicture({ id: user.id || 'zeus', role: user.role }).then((url) => {
+      if (url !== (user.profilePicUrl || null)) {
+        onPicChange && onPicChange(url);
+      }
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -2468,21 +3286,8 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
       setCurrentZeus({ username: user.username });
     }
     setNewPassword(''); setConfirmPass(''); setMsg(''); setErr(''); setImportStatus('');
-    // v21.1: Sync branding form fields from current branding state
-    setBrandName(branding?.workspaceName || '');
-    setBrandColor(branding?.accentColor || '');
-    setBrandLogoFile(null);
-    setBrandLogoPreview('');
-    setBrandMsg(''); setBrandErr('');
     return () => { alive = false; };
-  }, [open, isZeusUser, user.username, branding]);
-
-  // v21.1: Free the local object-URL when the preview changes or component unmounts
-  // to avoid memory leaks from unreleased blob: URLs.
-  useEffect(() => {
-    if (!brandLogoPreview) return;
-    return () => { try { URL.revokeObjectURL(brandLogoPreview); } catch {} };
-  }, [brandLogoPreview]);
+  }, [open, isZeusUser, user.username]);
 
   useEffect(() => {
     if (!open) return;
@@ -2516,73 +3321,6 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
       setMsg('Password updated. Logging you out…');
       setTimeout(() => { onClose(); onForceLogout(); }, 1200);
     } catch (e: any) { setErr(friendlyError(e)); } finally { setBusy(false); }
-  };
-
-  // v21.1: Branding save — uploads logo (if changed), then upserts row.
-  // Uses optimistic UI: if save fails, revert the parent's branding state.
-  const onPickLogo = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      setBrandErr('Logo must be smaller than 2 MB');
-      e.target.value = '';
-      return;
-    }
-    setBrandErr('');
-    setBrandLogoFile(file);
-    setBrandLogoPreview(URL.createObjectURL(file));
-  };
-
-  const saveBrandingSettings = async () => {
-    setBrandErr(''); setBrandMsg('');
-    // Validate accent color if provided (must be #rgb or #rrggbb)
-    const trimmedColor = (brandColor || '').trim();
-    if (trimmedColor && !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(trimmedColor)) {
-      return setBrandErr('Accent color must be a valid hex like #1a5fff or #f00');
-    }
-    setBrandSaving(true);
-    try {
-      let logoUrl = branding?.logoUrl || null;
-      if (brandLogoFile) {
-        // Upload new logo, get public URL
-        logoUrl = await uploadWorkspaceLogo(brandLogoFile, workspaceId, branding?.logoUrl || undefined);
-      }
-      const newBranding = {
-        ownerId: workspaceId,
-        workspaceName: brandName.trim() || null,
-        logoUrl: logoUrl || null,
-        accentColor: trimmedColor || null,
-      };
-      await saveBranding(newBranding);
-      setBranding && setBranding(newBranding);            // optimistic local update
-      reloadBranding && reloadBranding();                 // and server sync to be safe
-      setBrandLogoFile(null);
-      setBrandLogoPreview('');
-      setBrandMsg('Branding updated.');
-    } catch (e: any) {
-      setBrandErr(friendlyError(e));
-    } finally {
-      setBrandSaving(false);
-    }
-  };
-
-  const resetBrandingSettings = async () => {
-    const ok = await confirm({ title: 'Reset workspace branding?', message: 'This restores the default Infos name, logo, and color for your workspace. Logo image will be removed.', confirmLabel: 'Reset', danger: true });
-    if (!ok) return;
-    setBrandErr(''); setBrandMsg(''); setBrandSaving(true);
-    try {
-      const newBranding = { ownerId: workspaceId, workspaceName: null, logoUrl: null, accentColor: null };
-      await saveBranding(newBranding);
-      setBranding && setBranding(newBranding);
-      reloadBranding && reloadBranding();
-      setBrandName(''); setBrandColor('');
-      setBrandLogoFile(null); setBrandLogoPreview('');
-      setBrandMsg('Branding reset to defaults.');
-    } catch (e: any) {
-      setBrandErr(friendlyError(e));
-    } finally {
-      setBrandSaving(false);
-    }
   };
 
   const doExportAll = async () => {
@@ -2667,123 +3405,195 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
     ev.target.value = '';
   };
 
-  // v21.4: CSV import for Id&Pass entries.
-  // Expected columns (header row REQUIRED):
-  //   game,username,password,description,section
-  // - section is optional, defaults to 'games' (allowed: 'games' or 'accounts')
-  // - description is optional
-  // - quoted values supported (basic), commas inside quotes preserved
-  // - empty rows skipped
-  // - all entries get assignees=[] (admin can bulk-assign after)
-  const parseCsv = (text: string): Array<Record<string, string>> => {
-    const rows: string[][] = [];
-    let cur: string[] = [];
-    let field = '';
-    let inQuotes = false;
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (inQuotes) {
-        if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
-        else if (c === '"') { inQuotes = false; }
-        else field += c;
-      } else {
-        if (c === '"') inQuotes = true;
-        else if (c === ',') { cur.push(field); field = ''; }
-        else if (c === '\n') { cur.push(field); rows.push(cur); cur = []; field = ''; }
-        else if (c === '\r') { /* ignore */ }
-        else field += c;
-      }
-    }
-    if (field || cur.length) { cur.push(field); rows.push(cur); }
-    if (rows.length < 2) return [];
-    const headers = rows[0].map((h) => h.trim().toLowerCase());
-    return rows.slice(1)
-      .filter((r) => r.some((cell) => cell.trim() !== ''))
-      .map((r) => {
-        const obj: Record<string, string> = {};
-        headers.forEach((h, i) => { obj[h] = (r[i] ?? '').trim(); });
-        return obj;
-      });
-  };
-
-  const doCsvImport = async (ev: React.ChangeEvent<HTMLInputElement>) => {
-    const file = ev.target.files?.[0];
-    if (!file) return;
-    setCsvStatus(''); setCsvImporting(true);
-    try {
-      const text = await file.text();
-      const rows = parseCsv(text);
-      if (rows.length === 0) {
-        setCsvStatus('No data rows found. Check that your CSV has a header row + at least one data row.');
-        ev.target.value = '';
-        setCsvImporting(false);
-        return;
-      }
-      // Validate required columns
-      const sample = rows[0];
-      const missing = ['game', 'username', 'password'].filter((k) => !(k in sample));
-      if (missing.length) {
-        setCsvStatus(`Missing required columns: ${missing.join(', ')}. Header should be: game,username,password,description,section`);
-        ev.target.value = '';
-        setCsvImporting(false);
-        return;
-      }
-      // Confirm before importing
-      const ok = await confirm({
-        title: 'Import CSV?',
-        message: `${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} will be added to Id & Pass. Existing entries will not be affected.`,
-        confirmLabel: 'Import',
-      });
-      if (!ok) {
-        ev.target.value = '';
-        setCsvImporting(false);
-        return;
-      }
-      // Build rows. Use crypto.randomUUID for ids (browser-supported in all modern browsers).
-      const now = Date.now();
-      const targetWorkspace = workspaceIdForUser(user);
-      const dbRows = rows.map((r, idx) => {
-        const sec = (r.section || '').toLowerCase().trim();
-        return {
-          id: (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `csv-${now}-${idx}-${Math.random().toString(36).slice(2)}`),
-          game: r.game,
-          short_name: '',
-          username: r.username,
-          password: r.password,
-          description: r.description || '',
-          assignees: [],
-          section: sec === 'accounts' ? 'accounts' : 'games',
-          created_at: now + idx,                 // ensures stable ordering of imported rows
-          sort_order: now + idx,
-          owner_id: targetWorkspace,
-        };
-      });
-      await bulkInsert('idpass_entries', dbRows);
-      setCsvStatus(`✓ Imported ${dbRows.length} ${dbRows.length === 1 ? 'entry' : 'entries'} into Id & Pass.`);
-    } catch (e: any) {
-      setCsvStatus('CSV import failed: ' + friendlyError(e));
-    } finally {
-      ev.target.value = '';
-      setCsvImporting(false);
-    }
-  };
-
   if (!open) return null;
 
+  // v23.0: Sidebar nav structure. Sections shown depend on user role.
+  // Mobile: rendered as horizontal scrolling pills above content.
+  const sections: Array<{ key: string; label: string; icon: string; show: boolean }> = [
+    { key: 'profile',     label: 'Profile',          icon: '👤', show: true },
+    { key: 'account',     label: 'Account',          icon: '🔑', show: isAdmin },
+    { key: 'appearance',  label: 'Appearance',       icon: '🎨', show: true },
+    { key: 'data',        label: 'Backup & Data',    icon: '💾', show: isAdmin },
+    { key: 'trash',       label: 'Trash',            icon: '🗑',  show: isAdmin },
+    { key: 'devices',     label: 'Devices',          icon: '📱', show: isZeusUser },
+    { key: 'about',       label: 'About',            icon: 'ℹ️',  show: true },
+    { key: 'guide',       label: 'User Guide',       icon: '📖', show: true },
+    { key: 'privacy',     label: 'Privacy',          icon: '🔒', show: true },
+    { key: 'signout',     label: 'Sign out',         icon: '🚪', show: true },
+  ];
+  const visibleSections = sections.filter((s) => s.show);
+
+  // Section pane heading helper — keeps the right pane consistent.
+  // v23.1: bigger title, subtle bottom border for visual separation.
+  const SectionHeading = ({ title, sub }: { title: string; sub?: string }) => (
+    <div style={{ marginBottom: '24px', paddingBottom: '16px', borderBottom: `1px solid ${C.border}` }}>
+      <h2 style={{ fontSize: '22px', fontWeight: 700, letterSpacing: '-0.025em', margin: '0 0 6px', color: C.textPrimary }}>{title}</h2>
+      {sub && <div style={{ fontSize: '13.5px', color: C.textSecondary, lineHeight: 1.55, maxWidth: '520px' }}>{sub}</div>}
+    </div>
+  );
+
   return (
-    <div className="infos-modal-backdrop" onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-      <div className="infos-modal" onClick={(e) => e.stopPropagation()}
-        style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', maxWidth: '520px', width: '100%', maxHeight: '90vh', boxShadow: 'var(--shadow-pop)', display: 'flex', flexDirection: 'column' }}>
-        {confirmEl}
-        <div style={{ padding: '18px 20px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: '16px', fontWeight: 600, letterSpacing: '-0.01em' }}>Settings</div>
-          <button onClick={onClose} type="button" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', color: C.textTertiary, lineHeight: 1, padding: '4px 8px', borderRadius: '4px' }}>×</button>
+    <div className="infos-modal-backdrop"
+      style={{ position: 'fixed', inset: 0, background: C.softBg, zIndex: 9999, display: 'flex', flexDirection: 'column' }}>
+      {confirmEl}
+      {/* Top bar — always visible. Shows app brand + close button. */}
+      <div style={{
+        flexShrink: 0,
+        padding: '12px 18px',
+        borderBottom: `1px solid ${C.border}`,
+        background: C.cardBg,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: '12px',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <button onClick={onClose} type="button" aria-label="Back"
+            style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              padding: '6px 8px', borderRadius: '6px',
+              fontSize: '17px', color: C.textPrimary, lineHeight: 1,
+              display: 'flex', alignItems: 'center', gap: '4px',
+            }}>
+            ← <span style={{ fontSize: '14px', fontWeight: 500 }}>Back</span>
+          </button>
         </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px' }}>
-          {/* v21.3: Help & Guide card — visible to everyone, top of Settings.
-              Provides easy access to the in-app User Guide so testers don't
-              have to discover it via the user-menu dropdown. */}
+        <div style={{ fontSize: '15px', fontWeight: 600, letterSpacing: '-0.01em' }}>Settings</div>
+        <div style={{ width: '60px' }} />
+      </div>
+
+      {/* Layout: sidebar (desktop) | content. Mobile: pills + content. */}
+      <div className="infos-settings-wrapper" style={{ flex: 1, display: 'flex', minHeight: 0, overflow: 'hidden' }}>
+        {/* Sidebar — visible on screens ≥720px via the .infos-settings-sidebar class.
+            v23.1: Left-border accent on active item, slightly softer hover, divider before "Sign out". */}
+        <nav className="infos-settings-sidebar" style={{
+          flexShrink: 0,
+          width: '224px',
+          background: C.cardBg,
+          borderRight: `1px solid ${C.border}`,
+          padding: '14px 10px',
+          overflowY: 'auto',
+        }}>
+          {visibleSections.map((s, idx) => {
+            // Add a divider above "Sign out" for visual separation
+            const showDivider = s.key === 'signout' && idx > 0;
+            const isActive = activeSection === s.key;
+            return (
+              <div key={s.key}>
+                {showDivider && <div style={{ height: '1px', background: C.border, margin: '10px 4px' }} />}
+                <button onClick={() => setActiveSection(s.key)} type="button"
+                  style={{
+                    position: 'relative',
+                    display: 'flex', alignItems: 'center', gap: '11px',
+                    width: '100%', textAlign: 'left',
+                    padding: '9px 12px 9px 14px',
+                    marginBottom: '1px',
+                    fontSize: '13.5px',
+                    fontWeight: isActive ? 600 : 500,
+                    background: isActive ? C.accentSoft : 'transparent',
+                    color: isActive ? C.accentText : C.textPrimary,
+                    border: 'none',
+                    borderLeft: `3px solid ${isActive ? C.accent : 'transparent'}`,
+                    borderRadius: '6px',
+                    cursor: 'pointer', fontFamily: 'inherit',
+                    transition: 'background 0.12s, color 0.12s',
+                  }}
+                  onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = C.softBg; }}
+                  onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}>
+                  <span style={{ fontSize: '15px', lineHeight: 1, width: '18px', display: 'inline-block', textAlign: 'center' }}>{s.icon}</span>
+                  <span>{s.label}</span>
+                </button>
+              </div>
+            );
+          })}
+        </nav>
+
+        {/* Mobile pills — only visible on narrow screens via .infos-settings-pills */}
+        <div className="infos-settings-pills" style={{
+          display: 'none', flexShrink: 0,
+          padding: '10px 12px',
+          borderBottom: `1px solid ${C.border}`,
+          background: C.cardBg,
+          overflowX: 'auto',
+        }}>
+          {visibleSections.map((s) => (
+            <button key={s.key} onClick={() => setActiveSection(s.key)} type="button"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '7px 12px', marginRight: '6px',
+                fontSize: '12.5px', fontWeight: 500, whiteSpace: 'nowrap',
+                background: activeSection === s.key ? C.accentSoft : C.softBg,
+                color: activeSection === s.key ? C.accentText : C.textSecondary,
+                border: 'none', borderRadius: '999px',
+                cursor: 'pointer', fontFamily: 'inherit',
+              }}>
+              <span>{s.icon}</span>
+              <span>{s.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Content pane */}
+        <div style={{ flex: 1, overflowY: 'auto', padding: '24px clamp(16px, 5vw, 36px)' }}>
+          <div style={{ maxWidth: '640px' }}>
+
+          {/* ============== PROFILE SECTION ============== */}
+          {activeSection === 'profile' && (
+            <>
+              <SectionHeading title="Profile" sub="Your picture is shown in the user menu and account switcher." />
+
+          {/* v22.0: Profile picture card — visible to everyone.
+              All roles can upload their own avatar. */}
+          <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+            <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>
+              👤 Profile picture
+            </div>
+            <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '14px' }}>
+              Upload a picture to personalize your account. Visible to you in the header and account menu.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+              {/* Avatar preview */}
+              {(previewUrl || user.profilePicUrl) ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={previewUrl || user.profilePicUrl}
+                  alt="Your profile picture"
+                  style={{ width: '60px', height: '60px', objectFit: 'cover', borderRadius: '50%', border: `2px solid ${C.border}`, background: C.softBg, flexShrink: 0 }}
+                />
+              ) : (
+                <div style={{
+                  width: '60px', height: '60px', borderRadius: '50%',
+                  background: C.accentSoft, color: C.accentText,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '22px', fontWeight: 700,
+                  border: `2px solid ${C.border}`,
+                  flexShrink: 0,
+                }}>
+                  {(user.username || '?').charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <Btn onClick={() => picInputRef.current?.click()} disabled={picUploading} style={{ fontSize: '12.5px' }}>
+                  {picUploading ? 'Uploading…' : (user.profilePicUrl ? 'Change' : 'Upload')}
+                </Btn>
+                {user.profilePicUrl && (
+                  <Btn danger onClick={onRemoveProfilePic} disabled={picUploading} style={{ fontSize: '12.5px' }}>Remove</Btn>
+                )}
+                <input ref={picInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={onPickProfilePic} style={{ display: 'none' }} />
+              </div>
+            </div>
+            <div style={{ fontSize: '11.5px', color: C.textTertiary, marginTop: '10px' }}>
+              PNG, JPG, or WEBP. Max 2 MB. Square images look best.
+            </div>
+            {picErr && <div style={{ fontSize: '12.5px', color: C.danger, marginTop: '10px', padding: '7px 10px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{picErr}</div>}
+            {picMsg && <div style={{ fontSize: '12.5px', color: C.success, marginTop: '10px', padding: '7px 10px', background: C.successSoft, borderRadius: '6px', fontWeight: 500 }}>{picMsg}</div>}
+          </div>
+            </>
+          )}
+
+          {/* ============== USER GUIDE SECTION ============== */}
+          {activeSection === 'guide' && (
+            <>
+              <SectionHeading title="User Guide" sub="In-app docs tailored to your account type." />
+          {/* v21.3: Help & Guide card. Opens the role-specific guide. */}
           <div style={{ ...S.softCard, marginBottom: '1rem' }}>
             <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>
               📖 Help &amp; User Guide
@@ -2793,7 +3603,13 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
             </div>
             <Btn primary onClick={onOpenGuide} style={{ fontSize: '13px' }}>Open the User Guide</Btn>
           </div>
+            </>
+          )}
 
+          {/* ============== ACCOUNT (CREDENTIALS) SECTION ============== */}
+          {activeSection === 'account' && (
+            <>
+              <SectionHeading title="Account" sub={isZeusUser ? 'Change the main admin username and password.' : 'Change your password.'} />
           {/* Credentials section */}
           <div style={{ ...S.softCard, marginBottom: '1rem' }}>
             <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>
@@ -2816,120 +3632,152 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
               <Btn primary onClick={isZeusUser ? saveZeusCreds : saveCoPassword} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Save changes'}</Btn>
             </div>
           </div>
+            </>
+          )}
 
-          {/* v21.1: Workspace branding — admins only.
-              Each admin (Zeus, co-admin) can customize their workspace's
-              name, logo, and accent color. Sub-admins inherit read-only. */}
-          {isAdmin && (
-            <div style={{ ...S.softCard, marginBottom: '1rem' }}>
-              <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Workspace branding</div>
-              <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>
-                Customize how your workspace appears to you and your sub-admins. Leave any field empty to use defaults.
+          {/* ============== TRASH SECTION ============== */}
+          {activeSection === 'trash' && isAdminRole(user.role) && (
+            <>
+              <SectionHeading title="Trash" sub="Recently deleted items are kept here for 30 days. Restore or permanently delete." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>🗑 Open Trash bin</div>
+                <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '12px' }}>
+                  Browse soft-deleted notices, backend, games, and Id &amp; Pass entries.
+                </div>
+                <Btn primary onClick={onOpenTrash} style={{ fontSize: '13px' }}>Open Trash</Btn>
               </div>
+            </>
+          )}
 
-              {/* Name */}
-              <div style={{ marginBottom: '12px' }}>
-                <label style={S.label}>Workspace name</label>
-                <TextInput value={brandName} onChange={(e: any) => setBrandName(e.target.value)} placeholder="e.g. Alice's Gaming Hub" maxLength={40} />
-              </div>
-
-              {/* Color */}
-              <div style={{ marginBottom: '12px' }}>
-                <label style={S.label}>Accent color (hex)</label>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <input
-                    type="color"
-                    value={brandColor && /^#([0-9a-fA-F]{6})$/.test(brandColor) ? brandColor : '#7b64f5'}
-                    onChange={(e: any) => setBrandColor(e.target.value)}
-                    style={{ width: '44px', height: '36px', padding: '2px', cursor: 'pointer', border: `1px solid ${C.borderStrong}`, borderRadius: '6px' }}
-                    title="Pick a color"
-                  />
-                  <TextInput value={brandColor} onChange={(e: any) => setBrandColor(e.target.value)} placeholder="#7b64f5" style={{ flex: 1 }} maxLength={7} />
+          {/* ============== APPEARANCE SECTION ============== */}
+          {activeSection === 'appearance' && (
+            <>
+              <SectionHeading title="Appearance" sub="Choose how Infos looks. Auto follows your system preference and changes automatically." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '12px', letterSpacing: '-0.01em' }}>🎨 Theme</div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                  {[
+                    { key: 'light', label: 'Light', icon: '☀️' },
+                    { key: 'dark', label: 'Dark', icon: '🌙' },
+                    { key: 'auto', label: 'Auto', icon: '✨' },
+                  ].map((t) => {
+                    const isActive = theme === t.key;
+                    return (
+                      <button key={t.key} type="button" onClick={() => setTheme(t.key)}
+                        style={{
+                          padding: '14px 10px',
+                          background: isActive ? C.accentSoft : C.softBg,
+                          color: isActive ? C.accentText : C.textPrimary,
+                          border: `2px solid ${isActive ? C.accent : 'transparent'}`,
+                          borderRadius: '10px',
+                          cursor: 'pointer',
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
+                          fontSize: '13px', fontWeight: isActive ? 600 : 500,
+                          fontFamily: 'inherit',
+                          transition: 'background 0.15s, border-color 0.15s',
+                        }}>
+                        <span style={{ fontSize: '22px' }}>{t.icon}</span>
+                        <span>{t.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: '11.5px', color: C.textTertiary, marginTop: '12px', lineHeight: 1.5 }}>
+                  Theme preference is saved on this device. Other devices keep their own preference.
                 </div>
               </div>
+            </>
+          )}
 
-              {/* Logo */}
-              <div style={{ marginBottom: '12px' }}>
-                <label style={S.label}>Logo image</label>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  {/* Current or preview */}
-                  {(brandLogoPreview || branding?.logoUrl) ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={brandLogoPreview || branding.logoUrl} alt="Logo preview" style={{ width: '52px', height: '52px', objectFit: 'contain', borderRadius: '8px', border: `1px solid ${C.border}`, background: C.softBg, padding: '4px' }} />
-                  ) : (
-                    <div style={{ width: '52px', height: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px', border: `1px dashed ${C.borderStrong}`, color: C.textTertiary, fontSize: '11px', textAlign: 'center', padding: '4px' }}>No logo</div>
-                  )}
-                  <Btn onClick={() => logoInputRef.current?.click()} style={{ fontSize: '12.5px' }}>
-                    {brandLogoFile ? 'Change' : (branding?.logoUrl ? 'Replace' : 'Upload')}
-                  </Btn>
-                  <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={onPickLogo} style={{ display: 'none' }} />
+          {/* ============== DATA / BACKUP SECTION ============== */}
+          {activeSection === 'data' && isAdminRole(user.role) && (
+            <>
+              <SectionHeading title="Backup & Data" sub="Export everything in your workspace as JSON, or restore from a previous backup." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>💾 Export &amp; restore</div>
+                <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '14px' }}>
+                  Backup contains all your notices, backend entries, games, Id &amp; Pass entries, and sub-admins. Restore replaces existing data.
                 </div>
-                <div style={{ fontSize: '11.5px', color: C.textTertiary, marginTop: '6px' }}>
-                  PNG, JPG, WEBP, or SVG. Max 2 MB. Square recommended.
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
+                  <Btn onClick={() => fileRef.current?.click()}>↑ Import from backup</Btn>
+                  <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} style={{ display: 'none' }} />
+                </div>
+                {importStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{importStatus}</div>}
+              </div>
+            </>
+          )}
+
+          {/* ============== DEVICES SECTION (Zeus only) ============== */}
+          {activeSection === 'devices' && isZeusUser && (
+            <>
+              <SectionHeading title="Devices & Sessions" sub="See every active session across the platform and force-logout specific devices." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>📱 Manage devices</div>
+                <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '14px' }}>
+                  View who&apos;s logged in on which devices. Rename or revoke any session. Force-logout takes effect within ~30 seconds.
+                </div>
+                <Btn primary onClick={onOpenDevices} style={{ fontSize: '13px' }}>Open Devices manager</Btn>
+              </div>
+            </>
+          )}
+
+          {/* ============== ABOUT SECTION ============== */}
+          {activeSection === 'about' && (
+            <>
+              <SectionHeading title="About" sub="Information about this app and its creators." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>ℹ️ About Us</div>
+                <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '14px' }}>
+                  Read about Infos, contact information, and support. {isZeusUser && 'You can also edit the About content from there.'}
+                </div>
+                <Btn primary onClick={onOpenAbout} style={{ fontSize: '13px' }}>Open About</Btn>
+              </div>
+              <div style={{ ...S.softCard }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>App version</div>
+                <div style={{ fontSize: '12.5px', color: C.textTertiary, fontFamily: 'ui-monospace, monospace' }}>Infos v23.0</div>
+              </div>
+            </>
+          )}
+
+          {/* ============== PRIVACY SECTION ============== */}
+          {activeSection === 'privacy' && (
+            <>
+              <SectionHeading title="Privacy" sub="How your data is handled in Infos." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '8px', letterSpacing: '-0.01em' }}>🔒 Privacy summary</div>
+                <div style={{ fontSize: '13.5px', color: C.textSecondary, lineHeight: 1.7 }}>
+                  Infos stores your username, password, profile picture, and the content you create (notices, entries, credentials) in a Supabase database. Data is scoped to your workspace and never shared with other workspaces.
+                  <br/><br/>
+                  We don&apos;t use third-party advertising or analytics. The app runs as a Progressive Web App and stores some preferences (theme, notification settings, last-seen timestamps) on your device.
+                  <br/><br/>
+                  For account deletion or data removal, contact your workspace admin or Zeus.
+                </div>
+                <div style={{ marginTop: '14px' }}>
+                  <a href="/privacy" target="_blank" rel="noreferrer"
+                    style={{ fontSize: '13px', color: C.accent, textDecoration: 'none', fontWeight: 500 }}>
+                    View full privacy policy →
+                  </a>
                 </div>
               </div>
-
-              {brandErr && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{brandErr}</div>}
-              {brandMsg && <div style={{ fontSize: '13px', color: C.success, marginBottom: '10px', padding: '8px 12px', background: C.successSoft, borderRadius: '6px', fontWeight: 500 }}>{brandMsg}</div>}
-
-              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-                <Btn onClick={resetBrandingSettings} disabled={brandSaving} style={{ fontSize: '12.5px' }}>Reset to defaults</Btn>
-                <Btn primary onClick={saveBrandingSettings} disabled={brandSaving} style={{ opacity: brandSaving ? 0.7 : 1 }}>
-                  {brandSaving ? 'Saving…' : 'Save branding'}
-                </Btn>
-              </div>
-            </div>
+            </>
           )}
 
-          {/* Backup & restore — admins only (sub-admins are read-only and must not be able to dump/modify workspace data) */}
-          {isAdminRole(user.role) && (
-            <div style={{ ...S.softCard, marginBottom: '1rem' }}>
-              <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Backup &amp; restore</div>
-              <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '16px' }}>Export all data from your workspace as a JSON file, or restore from a previous backup.</div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
-                <Btn onClick={() => fileRef.current?.click()}>↑ Import from backup</Btn>
-                <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} style={{ display: 'none' }} />
+          {/* ============== SIGN OUT SECTION ============== */}
+          {activeSection === 'signout' && (
+            <>
+              <SectionHeading title="Sign out" sub="End your session on this device or every device you've signed into." />
+              <div style={{ ...S.softCard, marginBottom: '1rem' }}>
+                <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '8px', letterSpacing: '-0.01em' }}>🚪 Sign out everywhere</div>
+                <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '14px' }}>
+                  This signs out of every account on this device. Other devices stay logged in unless you revoke them from Devices.
+                </div>
+                <Btn danger onClick={() => { onClose(); onForceLogout(); }} style={{ fontSize: '13px' }}>Sign out of all accounts</Btn>
               </div>
-              {importStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{importStatus}</div>}
-            </div>
+            </>
           )}
 
-          {/* v21.4: Trash bin — admins only */}
-          {isAdminRole(user.role) && (
-            <div style={{ ...S.softCard, marginBottom: '1rem' }}>
-              <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>🗑 Trash</div>
-              <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '12px' }}>
-                Recently deleted items are kept here for 30 days. You can restore them or permanently delete them.
-              </div>
-              <Btn onClick={onOpenTrash} style={{ fontSize: '13px' }}>Open Trash</Btn>
-            </div>
-          )}
-
-          {/* v21.4: CSV import for Id & Pass — admins only */}
-          {isAdminRole(user.role) && (
-            <div style={S.softCard}>
-              <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>Import Id &amp; Pass from CSV</div>
-              <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '12px' }}>
-                Bulk add account credentials from a spreadsheet. Required columns:
-                <code style={{ display: 'block', marginTop: '6px', padding: '6px 10px', background: C.softBg, border: `1px solid ${C.border}`, borderRadius: '6px', fontSize: '11.5px', fontFamily: 'ui-monospace, monospace', overflowX: 'auto', whiteSpace: 'nowrap' }}>
-                  game,username,password,description,section
-                </code>
-                <span style={{ display: 'block', marginTop: '6px', fontSize: '12px' }}>
-                  • <strong>section</strong> is optional (&apos;games&apos; or &apos;accounts&apos;, defaults to games)<br/>
-                  • <strong>description</strong> is optional<br/>
-                  • Imported entries have no assignees — bulk-assign after import
-                </span>
-              </div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <Btn onClick={() => csvFileRef.current?.click()} disabled={csvImporting}>
-                  {csvImporting ? 'Importing…' : '↑ Choose CSV file'}
-                </Btn>
-                <input ref={csvFileRef} type="file" accept=".csv,text/csv" onChange={doCsvImport} style={{ display: 'none' }} />
-              </div>
-              {csvStatus && <div style={{ fontSize: '13px', marginTop: '12px', padding: '8px 12px', background: C.softBg, borderRadius: '6px', fontWeight: 500 }}>{csvStatus}</div>}
-            </div>
-          )}
+          </div>
         </div>
       </div>
     </div>
@@ -2937,7 +3785,7 @@ function SettingsModal({ open, onClose, user, onForceLogout, branding, setBrandi
 }
 
 // ---------------- Portal ----------------
-function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, onSignOutAll, theme, setTheme }: any) {
+function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, onSignOutAll, onUpdateUser, theme, setTheme }: any) {
   const isAdmin = isAdminRole(user.role);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -2945,6 +3793,8 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   const [searchOpen, setSearchOpen] = useState(false);                // v21.0
   const [welcomeOpen, setWelcomeOpen] = useState(false);              // v21.0
   const [trashOpen, setTrashOpen] = useState(false);                  // v21.4
+  const [whatChangedOpen, setWhatChangedOpen] = useState(false);      // v22.1
+  const [devicesOpen, setDevicesOpen] = useState(false);              // v22.2
 
   // v21.3: Toast system. Mounted at Portal level (always-on, top of z-stack).
   // Exposed via window.__infosToast so deeply-nested components can fire toasts
@@ -3087,6 +3937,54 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
     };
   }, [reloadAll, workspaceId]);
 
+  // v22.2: Session heartbeat + revoke check.
+  // - Pings sessions.last_seen_at every 60s while app is open (so admin sees
+  //   a fresh "last seen" stamp).
+  // - Polls sessions.revoked_at every 30s. If the row is revoked, sign out
+  //   immediately (force-logout from Zeus's Devices panel).
+  // Both run only when sessionId is set, which happens after a successful login.
+  useEffect(() => {
+    if (!user?.sessionId) return;
+    const sessId: string = user.sessionId;
+    let alive = true;
+
+    const heartbeat = () => { if (alive) pingSession(sessId).catch(() => {}); };
+    const checkRevoked = async () => {
+      if (!alive) return;
+      try {
+        const revoked = await isSessionRevoked(sessId);
+        if (revoked && alive) {
+          // Wipe localStorage and force a hard reload — simplest way to
+          // ensure the device is fully signed out.
+          try { onSignOutAll(); } catch {}
+          try { window.location.reload(); } catch {}
+        }
+      } catch { /* swallow */ }
+    };
+
+    // Fire once immediately so the timestamps update right after login
+    heartbeat();
+    const hbId = window.setInterval(heartbeat, 60_000);  // 60 seconds
+    const rvId = window.setInterval(checkRevoked, 30_000); // 30 seconds
+
+    // Also heartbeat when the user comes back to the tab (after long idle)
+    const onVis = () => { if (!document.hidden) { heartbeat(); checkRevoked(); } };
+    document.addEventListener('visibilitychange', onVis);
+
+    return () => {
+      alive = false;
+      window.clearInterval(hbId);
+      window.clearInterval(rvId);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [user?.sessionId, onSignOutAll]);
+
+  // v22.2: Best-effort prune of stale session rows on app load.
+  // Removes sessions not seen in 30+ days. Runs once per Portal mount.
+  useEffect(() => {
+    pruneStaleSessions().catch(() => {});
+  }, []);
+
   // v21.0: Show the welcome modal ONCE per device for this user.
   // Tracked in localStorage with a per-user-id key so the modal doesn't reopen
   // every time, and doesn't appear at all once the user has seen it.
@@ -3124,18 +4022,7 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   ];
 
   return (
-    <div style={{
-      ...S.shell,
-      // v21.1: workspace accent override.
-      // We override --accent + --accent-soft + --accent-text CSS variables so
-      // the workspace's color flows through every styled element automatically.
-      // accent-soft is the same color at 12% opacity (matches default purple's soft).
-      ...(branding.accentColor ? {
-        ['--accent' as any]: branding.accentColor,
-        ['--accent-soft' as any]: hexToRgba(branding.accentColor, 0.12),
-        ['--accent-text' as any]: branding.accentColor,
-      } : {}),
-    }}>
+    <div style={S.shell}>
       <AboutModal
         open={aboutOpen}
         onClose={() => setAboutOpen(false)}
@@ -3150,12 +4037,30 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
         reloadBranding={reloaders.workspace_branding}
         onOpenGuide={() => { setSettingsOpen(false); setGuideOpen(true); }}
         onOpenTrash={() => { setSettingsOpen(false); setTrashOpen(true); }}
+        onOpenDevices={() => { setSettingsOpen(false); setDevicesOpen(true); }}
+        onOpenAbout={() => { setSettingsOpen(false); setAboutOpen(true); }}
+        onPicChange={(url: string | null) => onUpdateUser && onUpdateUser({ profilePicUrl: url })}
+        theme={theme} setTheme={setTheme}
       />
       {/* v21.0: New modals + install prompt banner */}
       <UserGuideModal open={guideOpen} onClose={() => setGuideOpen(false)} user={user} />
       <WelcomeModal open={welcomeOpen} onClose={dismissWelcome} user={user} onOpenGuide={() => setGuideOpen(true)} />
       {/* v21.4: Trash modal — admin-only */}
       <TrashModal open={trashOpen} onClose={() => setTrashOpen(false)} workspaceId={workspaceId} onAfterChange={reloadAll} />
+      {/* v22.1: What changed this week activity feed */}
+      <WhatChangedModal
+        open={whatChangedOpen}
+        onClose={() => setWhatChangedOpen(false)}
+        user={user}
+        notices={notices} backend={backend} games={games} idpass={idpass}
+        onNavigate={(t: string) => setTab(t)}
+      />
+      {/* v22.2: Devices manager — Zeus only */}
+      <DevicesModal
+        open={devicesOpen}
+        onClose={() => setDevicesOpen(false)}
+        currentSessionId={user?.sessionId || null}
+      />
       <GlobalSearchModal
         open={searchOpen} onClose={() => setSearchOpen(false)}
         user={user} subs={subs}
@@ -3167,18 +4072,11 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
       <div style={S.card}>
         <div style={S.headerBar}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-            {/* v21.1: Custom logo if set, otherwise default */}
-            {branding.logoUrl ? (
-              // Plain <img> here (not next/image) because the logo URL is dynamic
-              // and pointing at Supabase Storage — no need for Next's optimizer.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={branding.logoUrl} alt="" width={38} height={38} style={{ flexShrink: 0, objectFit: 'contain', borderRadius: '6px' }} />
-            ) : (
-              <Image src="/logo.png" alt="" width={38} height={38} style={{ flexShrink: 0 }} />
-            )}
+            {/* v22.0: Reverted to default Infos logo (workspace branding removed).
+                Profile picture (if user uploaded one) is shown via AccountSwitcher avatar. */}
+            <Image src="/logo.png" alt="" width={38} height={38} style={{ flexShrink: 0 }} />
             <div style={{ minWidth: 0 }}>
-              {/* v21.1: Custom workspace name if set, otherwise "Infos" */}
-              <div style={S.brand}>{branding.workspaceName || 'Infos'}</div>
+              <div style={S.brand}>Infos</div>
               <div style={S.sub}>
                 {user.username} — {user.role === 'zeus' ? 'main admin' : user.role === 'co' ? 'co-admin' : 'sub-admin'}
               </div>
@@ -3199,9 +4097,36 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenGuide={() => setGuideOpen(true)}
               onOpenSearch={() => setSearchOpen(true)}
+              onOpenWhatChanged={() => setWhatChangedOpen(true)}
+              onOpenDevices={() => setDevicesOpen(true)}
               theme={theme} setTheme={setTheme} />
           </div>
         </div>
+        {/* v22.0: Search bar moved from user menu to main page (above tabs).
+            Click to open the global search modal — searches Notices, Backend,
+            Games, and Id&Pass simultaneously. */}
+        <button
+          onClick={() => setSearchOpen(true)}
+          type="button"
+          className="infos-btn"
+          style={{
+            display: 'flex', alignItems: 'center', gap: '10px',
+            width: '100%',
+            margin: '8px 0 12px',
+            padding: '11px 14px',
+            background: C.softBg,
+            border: `1px solid ${C.border}`,
+            borderRadius: '10px',
+            cursor: 'pointer',
+            color: C.textTertiary,
+            fontSize: '13.5px',
+            fontFamily: 'inherit',
+            textAlign: 'left',
+          }}>
+          <span style={{ fontSize: '15px', flexShrink: 0 }}>🔍</span>
+          <span style={{ flex: 1 }}>Search everything…</span>
+          <span style={{ fontSize: '11px', color: C.textTertiary, opacity: 0.7, flexShrink: 0 }}>Notices · Backend · Games · Id&amp;Pass</span>
+        </button>
         <div className="infos-tabs" style={S.tabs}>
           {tabs.map((t) => <button key={t.id} onClick={() => setTab(t.id)} className="infos-tab" style={tabStyle(tab === t.id)}>{t.label}</button>)}
         </div>
@@ -3289,12 +4214,28 @@ export default function InfosApp() {
   };
   const switchTo = (k: string) => { if (accounts.some((a) => accKey(a) === k)) { setActiveKey(k); saveSession('ACTIVE', k); } };
   const signOut = (k: string) => {
+    // v22.2: Best-effort delete the session row for the account being signed out.
+    const target = accounts.find((a) => accKey(a) === k);
+    if (target?.sessionId) deleteSession(target.sessionId).catch(() => {});
     const next = accounts.filter((a) => accKey(a) !== k);
     setAccounts(next);
     if (next.length === 0) { setActiveKey(null); persist(next, null); }
     else { const na = activeKey === k ? accKey(next[0]) : activeKey; setActiveKey(na); persist(next, na); }
   };
-  const signOutAll = () => { setAccounts([]); setActiveKey(null); setAddingAccount(false); persist([], null); };
+  const signOutAll = () => {
+    // v22.2: Delete all session rows for accounts being cleared.
+    accounts.forEach((a) => { if (a.sessionId) deleteSession(a.sessionId).catch(() => {}); });
+    setAccounts([]); setActiveKey(null); setAddingAccount(false); persist([], null);
+  };
+
+  // v22.0: Update fields on the currently active user (e.g. profilePicUrl).
+  // Patches the accounts array and persists to localStorage.
+  const updateActiveUser = (patch: Partial<any>) => {
+    if (!activeKey) return;
+    const next = accounts.map((a) => accKey(a) === activeKey ? { ...a, ...patch } : a);
+    setAccounts(next);
+    persist(next, activeKey);
+  };
 
   if (!hydrated) return null;
   if (envMissing) {
@@ -3322,5 +4263,5 @@ export default function InfosApp() {
   if (addingAccount) return <LoginForm onLogin={addAccount} onCancel={() => setAddingAccount(false)} cancelLabel="Back" subtitle="Add another account" />;
   const activeUser = accounts.find((a) => accKey(a) === activeKey);
   if (!activeUser) return <LoginForm onLogin={addAccount} />;
-  return <Portal user={activeUser} accounts={accounts} activeKey={activeKey} onSwitch={switchTo} onAddAccount={() => setAddingAccount(true)} onSignOut={signOut} onSignOutAll={signOutAll} theme={theme} setTheme={setTheme} />;
+  return <Portal user={activeUser} accounts={accounts} activeKey={activeKey} onSwitch={switchTo} onAddAccount={() => setAddingAccount(true)} onSignOut={signOut} onSignOutAll={signOutAll} onUpdateUser={updateActiveUser} theme={theme} setTheme={setTheme} />;
 }

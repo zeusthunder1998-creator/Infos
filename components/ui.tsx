@@ -196,13 +196,20 @@ export function useToast() {
   };
 
   const element = (
-    <div aria-live="polite" aria-atomic="true" style={{
+    <div aria-live="polite" aria-atomic="true" className="infos-toast-stack" style={{
+      // v22.0: Mobile-friendly toast position.
+      // - Uses calc with env(safe-area-inset-top) so toasts clear the
+      //   notch/status bar on TWA / standalone PWAs.
+      // - Centered horizontally on mobile (left:14px, right:14px) so
+      //   long messages don't get cut off the right edge.
+      // - max-width caps width on desktop so toasts don't span full screen.
       position: 'fixed',
-      top: '14px', right: '14px',
+      top: 'calc(env(safe-area-inset-top, 0px) + 14px)',
+      left: '14px',
+      right: '14px',
       zIndex: 11000,
-      display: 'flex', flexDirection: 'column', gap: '8px',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px',
       pointerEvents: 'none',
-      maxWidth: 'calc(100vw - 28px)',
     }}>
       {items.map((t) => {
         const c = colorFor(t.type);
@@ -217,7 +224,9 @@ export function useToast() {
               borderLeft: `4px solid ${c.border}`,
               borderRadius: '8px',
               boxShadow: 'var(--shadow-pop)',
-              minWidth: '220px', maxWidth: '380px',
+              width: '100%',                                // fill within stack
+              maxWidth: '420px',                            // cap on desktop
+              minWidth: 0,
               fontSize: '13.5px', fontWeight: 500,
               color: 'var(--text-primary)',
               animation: 'infosSlideUp 0.22s ease-out',

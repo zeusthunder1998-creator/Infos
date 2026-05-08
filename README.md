@@ -1,42 +1,79 @@
-# Infos (v21.4)
+# Infos (v23.1)
 
 Multi-tenant admin portal. Each co-admin runs their own isolated workspace with their own sub-admins and content. Zeus oversees the platform and creates new co-admins. Backed by Supabase with real-time sync. Progressive Web App installable on mobile + desktop.
 
-## v21.4 — Trash, notification preferences, CSV import
+## v23.1 — Settings polish
 
-- **🗑 Trash bin (soft delete)** — Deleted entries (Backend, Games, Id&Pass, Notices) move to a Trash modal accessible from Settings (admin-only). Restore or permanently delete. Auto-purges items older than 30 days.
-- **🔔 Notification preferences** — Gear icon inside the notification bell opens a preferences panel. Toggle which categories you want to be notified about (Notices, Backend, Games, Id&Pass). Stored per-device.
-- **📑 CSV import for Id & Pass** — Bulk-add account credentials from a spreadsheet. Settings → "Import Id & Pass from CSV". Required columns: `game,username,password,description,section`.
+- **Sidebar refined**: left-border accent on active section, hover states, divider before "Sign out"
+- **Section headings polished**: bigger title with subtle bottom divider
+- **Theme picker now in Settings → Appearance** (light / dark / auto cards) instead of placeholder
+- **Refined app icon**: connected glyph (dot merged with bar), softer top highlight, inner border accent
+- No DB schema change — pure UX work
 
-Schema change required (combined v20.7 + v21.1 + v21.4): see `v21.4-migration.sql`.
+## v23.0 — Settings redesign + new app icon
+
+- **Full-screen Settings page** with sidebar navigation (like macOS Settings / Discord)
+- **Sections organized by purpose**: Profile, Account, Appearance, Backup & Data, Trash, Devices, User Guide, About, Privacy, Sign out
+- **Mobile responsive** — sidebar collapses to horizontal pills on small screens
+- **New app icon** — clean purple-gradient design
+
+## v22.2 — Devices & sessions (Zeus-only)
+
+- **📱 Devices & sessions panel** — Zeus can now see EVERY active session across the platform: which user, which device, when they signed in, when they were last seen.
+- **Force-logout** — Zeus can revoke any session. The target device signs out within ~30 seconds (next poll).
+- **Device naming** — Users see auto-detected platform ("Chrome on Windows", "Safari on iPhone"). Zeus can also rename any device for clarity ("Office laptop", "Boss's phone").
+- **Session lifecycle**:
+  - Login → registers a session row with device fingerprint
+  - Heartbeat every 60 seconds while app is open → updates last_seen
+  - Self-poll every 30 seconds → if revoked, signs out automatically
+  - Sign out → deletes the session row cleanly
+  - 30-day auto-prune of stale rows on app load
+
+**Limitations:**
+- "Soft auth" — clears localStorage = bypass. Not bulletproof against determined attackers.
+- Idle/offline devices show as "active" until heartbeat times out.
+
+Schema change required (small, additive): see `v22.2-migration.sql`.
+
+## v22.1 — What changed this week
+
+📅 Activity feed in the user menu showing last 7 days, grouped by day.
+
+## v22.0 — Profile pictures, search relocation, role-specific guides, cleanup
+
+- **👤 Profile pictures (all roles)** — Settings → "Profile picture" card. Zeus, co-admins, and sub-admins can each upload a custom avatar (PNG / JPG / WEBP, max 2 MB). Shown in the user menu and account switcher.
+- **🔍 Search moved to main page** — The "Search everything" bar now sits prominently above the tabs (was hidden in the user menu). Much more discoverable.
+- **📖 Role-specific User Guide** — Each role now sees ONLY their own content. Zeus sees Zeus stuff. Co-admins see co-admin stuff. Sub-admins see sub-admin stuff. No more unnecessary noise.
+- **🍞 Toast position fixed for mobile** — Toasts now respect the phone's safe-area inset (no longer hidden behind the status bar / notch) and stack horizontally centered on small screens.
+- **❌ Workspace branding removed** — Reverted to default Infos look.
+- **❌ CSV import removed** — Backup/restore JSON covers the same need.
+
+Schema change required (small, additive): see `v22.0-migration.sql`.
+
+## v21.4 — Trash, notification preferences
+
+- **🗑 Trash bin (soft delete)** — Deleted entries (Backend, Games, Id&Pass, Notices) move to a Trash modal in Settings. Restore or permanently delete. Auto-purges items older than 30 days.
+- **🔔 Notification preferences** — Gear icon inside the notification bell opens a preferences panel. Toggle which categories you want to be notified about.
 
 ## v21.3 — Polish
 
-- **🍞 Toast notifications** — Slide-in success/error/info messages replace the ugly browser `alert()` popups.
-- **⏳ Loading skeletons** — Shimmering placeholder bars while data loads. Feels faster.
-- **📭 Empty state illustrations** — Friendly emoji + headline + helper hint instead of plain "No notices yet".
-- **📖 Help & User Guide card in Settings** — Direct access to the in-app docs from Settings, in addition to the user-menu shortcut.
+🍞 Toast notifications · ⏳ Loading skeletons · 📭 Empty state illustrations · 📖 User Guide card in Settings.
 
-## v21.2 — In-app notification bell
+## v21.2 — Notification bell
 
-🔔 Bell icon in the header with red unread badge. Dropdown shows recent notices and entries (filtered by user visibility). Mark all read, click to navigate. No backend infrastructure required — tracks read state in localStorage.
-
-## v21.1 — Workspace branding
-
-Each admin (Zeus + co-admins) can customize how their workspace looks for themselves and their sub-admins. Settings → "Workspace branding".
+🔔 In-app notification bell with unread badge.
 
 ## v21.0 — Search, guide, onboarding, install prompt
 
-- **🔍 Global search** across Notices, Backend, Games, Id & Pass simultaneously
-- **📖 User Guide** in-app docs tailored to your account role
-- **👋 Welcome modal** for first-time sub-admins (once per device)
-- **📱 Install prompt** banner for PWA install
+🔍 Global search · 📖 Role-aware User Guide · 👋 Welcome modal · 📱 Install prompt banner.
 
 ## v20.7 — Pinned notices
 
-Admins can pin important notices to the top via the 📌 button.
+📌 Admins can pin important notices to the top.
 
-## v20 audit pass — performance & sync fixes
+## v20.x baseline
+
+Filter pills, sub-tabs (🎮 Games | 🔐 Accounts), 📋 Copy & Paste section, privacy page, performance optimizations.
 
 After v20 was first built, the entire codebase was audited end-to-end for bugs, performance regressions, and sync reliability. The following fixes shipped:
 

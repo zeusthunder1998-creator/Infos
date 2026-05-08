@@ -98,6 +98,7 @@ function rowToSub(r: DbRow): Entry {
   return {
     id: r.id, username: r.username || '', password: r.password || '',
     role: r.role || 'sub',  // 'sub' or 'co'
+    profilePicUrl: r.profile_pic_url || null,        // v22.0
     createdAt: Number(r.created_at),
     updatedAt: r.updated_at ? Number(r.updated_at) : null,
     sortOrder: r.sort_order ?? 0,
@@ -121,11 +122,11 @@ export function workspaceIdForUser(user: any): string {
 }
 
 // ---------- Zeus creds ----------
-export async function loadZeus(): Promise<{ username: string; password: string }> {
+export async function loadZeus(): Promise<{ username: string; password: string; profilePicUrl?: string | null }> {
   const sb = getSupabase();
-  const { data, error } = await sb.from('zeus_creds').select('username, password').eq('id', 1).single();
+  const { data, error } = await sb.from('zeus_creds').select('username, password, profile_pic_url').eq('id', 1).single();
   if (error || !data) return DEFAULT_ZEUS;
-  return { username: data.username, password: data.password };
+  return { username: data.username, password: data.password, profilePicUrl: data.profile_pic_url || null };
 }
 export async function saveZeus(creds: { username: string; password: string }) {
   const sb = getSupabase();
@@ -838,4 +839,395 @@ export async function emptyTrash(ownerId: string, olderThanMs: number = 0): Prom
 export const TRASH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export async function purgeOldTrash(ownerId: string) {
   try { await emptyTrash(ownerId, TRASH_TTL_MS); } catch (e) { console.error('[purgeOldTrash]', e); }
+}
+
+// ---------- v22.0: Profile pictures ----------
+const PROFILE_PIC_BUCKET = 'profile-pics';
+
+/**
+ * Upload a profile picture to Supabase Storage and update the user's row.
+ * For Zeus: writes to zeus_creds.profile_pic_url
+ * For co-admins / sub-admins: writes to sub_admins.profile_pic_url
+ */
+export async function uploadProfilePicture(file: File, user: { id: string; role: string }, previousUrl?: string): Promise<string> {
+  const sb = getSupabase();
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'png';
+  const validExts = ['png', 'jpg', 'jpeg', 'webp'];
+  const safeExt = validExts.includes(ext) ? ext : 'png';
+  // Per-user folder so users can't collide
+  const fileName = `${user.id}/avatar-${Date.now()}.${safeExt}`;
+
+  const { error: upErr } = await sb.storage.from(PROFILE_PIC_BUCKET).upload(fileName, file, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: file.type || `image/${safeExt}`,
+  });
+  if (upErr) throw upErr;
+
+  // Delete the previous uploaded picture for this user (best-effort)
+  if (previousUrl && previousUrl.includes(`/${PROFILE_PIC_BUCKET}/`)) {
+    try {
+      const prevName = previousUrl.split(`/${PROFILE_PIC_BUCKET}/`)[1]?.split('?')[0];
+      if (prevName) await sb.storage.from(PROFILE_PIC_BUCKET).remove([prevName]);
+    } catch { /* non-fatal */ }
+  }
+
+  const { data } = sb.storage.from(PROFILE_PIC_BUCKET).getPublicUrl(fileName);
+  const publicUrl = data.publicUrl;
+
+  // Save URL to the appropriate user row
+  if (user.role === 'zeus') {
+    // zeus_creds is a single-row table with id=1
+    const { error } = await sb.from('zeus_creds').update({ profile_pic_url: publicUrl }).eq('id', 1);
+    if (error) throw error;
+  } else {
+    const { error } = await sb.from('sub_admins').update({ profile_pic_url: publicUrl }).eq('id', user.id);
+    if (error) throw error;
+  }
+
+  return publicUrl;
+}
+
+/** Clear the user's profile picture (sets DB column to null; storage object cleanup is best-effort). */
+export async function clearProfilePicture(user: { id: string; role: string }, previousUrl?: string): Promise<void> {
+  const sb = getSupabase();
+  if (user.role === 'zeus') {
+    const { error } = await sb.from('zeus_creds').update({ profile_pic_url: null }).eq('id', 1);
+    if (error) throw error;
+  } else {
+    const { error } = await sb.from('sub_admins').update({ profile_pic_url: null }).eq('id', user.id);
+    if (error) throw error;
+  }
+  if (previousUrl && previousUrl.includes(`/${PROFILE_PIC_BUCKET}/`)) {
+    try {
+      const prevName = previousUrl.split(`/${PROFILE_PIC_BUCKET}/`)[1]?.split('?')[0];
+      if (prevName) await sb.storage.from(PROFILE_PIC_BUCKET).remove([prevName]);
+    } catch { /* non-fatal */ }
+  }
+}
+
+/** Load fresh profile pic URL for the current user (used on app load to refresh stale localStorage URLs). */
+export async function loadProfilePicture(user: { id: string; role: string }): Promise<string | null> {
+  const sb = getSupabase();
+  if (user.role === 'zeus') {
+    const { data, error } = await sb.from('zeus_creds').select('profile_pic_url').eq('id', 1).maybeSingle();
+    if (error) return null;
+    return data?.profile_pic_url || null;
+  } else {
+    const { data, error } = await sb.from('sub_admins').select('profile_pic_url').eq('id', user.id).maybeSingle();
+    if (error) return null;
+    return data?.profile_pic_url || null;
+  }
+}
+
+// ---------- v22.2: Device session tracking ----------
+// Each browser/device gets a stable random ID stored in localStorage.
+// On login + every 60s heartbeat, we upsert a row in the sessions table.
+// Zeus can list all sessions across users and revoke any of them.
+//
+// Limitations to be aware of:
+// - This is "soft auth" not real auth. A clever user could clear localStorage
+//   to bypass revocation; revocation only affects the next time the device
+//   pings or opens the app.
+// - Idle/offline devices won't show up as revoked until they reconnect.
+// - Device names are user-supplied or auto-detected from User-Agent.
+export type DeviceSession = {
+  id: string;                  // session row id (uuid)
+  deviceId: string;            // stable per-browser id from localStorage
+  userId: string;              // 'zeus' or sub_admins.id
+  username: string;            // for display in admin list
+  role: string;                // 'zeus' | 'co' | 'sub'
+  ownerId: string;             // workspace this user belongs to
+  deviceLabel: string | null;  // user-supplied name
+  userAgent: string | null;    // raw UA for fingerprinting
+  platform: string | null;     // detected platform string
+  createdAt: number;           // first seen
+  lastSeenAt: number;          // most recent ping
+  revokedAt: number | null;    // null = active, set = forced logout
+};
+
+function rowToSession(r: any): DeviceSession {
+  return {
+    id: r.id,
+    deviceId: r.device_id || '',
+    userId: r.user_id || '',
+    username: r.username || '',
+    role: r.role || 'sub',
+    ownerId: r.owner_id || 'zeus',
+    deviceLabel: r.device_label || null,
+    userAgent: r.user_agent || null,
+    platform: r.platform || null,
+    createdAt: Number(r.created_at) || 0,
+    lastSeenAt: Number(r.last_seen_at) || 0,
+    revokedAt: r.revoked_at ? Number(r.revoked_at) : null,
+  };
+}
+
+/**
+ * Register or refresh a session for the current device.
+ * Creates the row on first login, updates last_seen_at on subsequent pings.
+ * Returns the session row id (also stored in localStorage to identify the
+ * session this device "owns" for self-revocation checks).
+ */
+export async function upsertSession(args: {
+  deviceId: string;
+  userId: string;
+  username: string;
+  role: string;
+  ownerId: string;
+  deviceLabel?: string | null;
+  userAgent?: string | null;
+  platform?: string | null;
+}): Promise<string> {
+  const sb = getSupabase();
+  const now = Date.now();
+
+  // First, try to find an existing row for this (device_id, user_id) pair.
+  // If found, just bump last_seen_at and clear revoked_at (if user re-signs in).
+  const { data: existing } = await sb.from('sessions')
+    .select('id')
+    .eq('device_id', args.deviceId)
+    .eq('user_id', args.userId)
+    .maybeSingle();
+
+  if (existing?.id) {
+    const updatePatch: any = { last_seen_at: now };
+    // On a fresh login (or unrevoke), reset revoked_at to null
+    updatePatch.revoked_at = null;
+    if (args.deviceLabel !== undefined) updatePatch.device_label = args.deviceLabel;
+    if (args.userAgent !== undefined) updatePatch.user_agent = args.userAgent;
+    if (args.platform !== undefined) updatePatch.platform = args.platform;
+    const { error } = await sb.from('sessions').update(updatePatch).eq('id', existing.id);
+    if (error) throw error;
+    return existing.id;
+  }
+
+  // New session row
+  const sessionId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `sess-${now}-${Math.random().toString(36).slice(2)}`;
+  const { error } = await sb.from('sessions').insert({
+    id: sessionId,
+    device_id: args.deviceId,
+    user_id: args.userId,
+    username: args.username,
+    role: args.role,
+    owner_id: args.ownerId,
+    device_label: args.deviceLabel || null,
+    user_agent: args.userAgent || null,
+    platform: args.platform || null,
+    created_at: now,
+    last_seen_at: now,
+    revoked_at: null,
+  });
+  if (error) throw error;
+  return sessionId;
+}
+
+/** Update only the last_seen_at timestamp (heartbeat ping). Lightweight. */
+export async function pingSession(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  const sb = getSupabase();
+  const { error } = await sb.from('sessions')
+    .update({ last_seen_at: Date.now() })
+    .eq('id', sessionId);
+  if (error) console.error('[pingSession]', error);
+  // Do not throw — heartbeat failures should never disrupt the user.
+}
+
+/**
+ * Check if THIS device's session has been revoked.
+ * Returns true if revoked (caller should sign out), false otherwise.
+ * Network errors return false (fail-open) to avoid kicking users on
+ * connectivity blips.
+ */
+export async function isSessionRevoked(sessionId: string): Promise<boolean> {
+  if (!sessionId) return false;
+  const sb = getSupabase();
+  const { data, error } = await sb.from('sessions')
+    .select('revoked_at')
+    .eq('id', sessionId)
+    .maybeSingle();
+  if (error || !data) return false;
+  return !!data.revoked_at;
+}
+
+/** Update the user-facing label for a session. Anyone can rename their own session. */
+export async function renameSession(sessionId: string, label: string): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from('sessions')
+    .update({ device_label: label.trim() || null })
+    .eq('id', sessionId);
+  if (error) throw error;
+}
+
+/**
+ * Load ALL sessions across the platform. Zeus-only — this returns sessions
+ * for every user in every workspace (Zeus, co-admins, sub-admins).
+ * Active sessions only by default; pass includeRevoked=true to include
+ * revoked rows for audit/debugging purposes.
+ */
+export async function loadAllSessions(includeRevoked = false): Promise<DeviceSession[]> {
+  const sb = getSupabase();
+  let q = sb.from('sessions').select('*').order('last_seen_at', { ascending: false });
+  if (!includeRevoked) q = q.is('revoked_at', null);
+  const { data, error } = await q;
+  if (error) { console.error(error); return []; }
+  return (data || []).map(rowToSession);
+}
+
+/**
+ * Revoke a session (force-logout). Sets revoked_at to now.
+ * The target device will detect this on its next poll (~30 seconds)
+ * and sign itself out.
+ */
+export async function revokeSession(sessionId: string): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from('sessions')
+    .update({ revoked_at: Date.now() })
+    .eq('id', sessionId);
+  if (error) throw error;
+}
+
+/**
+ * Hard-delete a session row. Used on explicit sign-out so we don't accumulate
+ * stale rows. (Revoke = "I'm kicking you off remotely"; delete = "I'm signing
+ * out cleanly".)
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  const sb = getSupabase();
+  const { error } = await sb.from('sessions').delete().eq('id', sessionId);
+  if (error) console.error('[deleteSession]', error);
+}
+
+// Auto-prune sessions that haven't been seen in 30 days. Best-effort,
+// runs on app load. Prevents the table from growing unbounded.
+export const SESSION_STALE_MS = 30 * 24 * 60 * 60 * 1000;
+export async function pruneStaleSessions(): Promise<void> {
+  const sb = getSupabase();
+  try {
+    const cutoff = Date.now() - SESSION_STALE_MS;
+    await sb.from('sessions').delete().lt('last_seen_at', cutoff);
+  } catch (e) { console.error('[pruneStaleSessions]', e); }
+}
+
+
+// ---------- v24.0: Web Push subscriptions ----------
+// Each browser-device pair gets one subscription row when the user opts in.
+// The endpoint URL is unique per browser, so we use it as the conflict target.
+export type PushSubscriptionRow = {
+  id: string;
+  userId: string;
+  username: string;
+  role: string;
+  ownerId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  deviceLabel: string | null;
+  userAgent: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+  failedCount: number;
+};
+
+function rowToPushSub(r: any): PushSubscriptionRow {
+  return {
+    id: r.id,
+    userId: r.user_id || '',
+    username: r.username || '',
+    role: r.role || 'sub',
+    ownerId: r.owner_id || 'zeus',
+    endpoint: r.endpoint || '',
+    p256dh: r.p256dh || '',
+    auth: r.auth || '',
+    deviceLabel: r.device_label || null,
+    userAgent: r.user_agent || null,
+    createdAt: Number(r.created_at) || 0,
+    lastSeenAt: Number(r.last_seen_at) || 0,
+    failedCount: Number(r.failed_count) || 0,
+  };
+}
+
+/**
+ * Save (or refresh) a push subscription for the current user/browser.
+ * Uses endpoint as the unique key — re-subscribing on the same browser
+ * just updates the row instead of creating a duplicate.
+ */
+export async function savePushSubscription(args: {
+  userId: string;
+  username: string;
+  role: string;
+  ownerId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent?: string | null;
+}): Promise<void> {
+  const sb = getSupabase();
+  const now = Date.now();
+
+  // Look up existing row by endpoint (unique)
+  const { data: existing } = await sb.from('push_subscriptions')
+    .select('id')
+    .eq('endpoint', args.endpoint)
+    .maybeSingle();
+
+  if (existing?.id) {
+    // Refresh — endpoint already known, just bump last_seen + reset failed_count
+    const { error } = await sb.from('push_subscriptions').update({
+      user_id: args.userId,
+      username: args.username,
+      role: args.role,
+      owner_id: args.ownerId,
+      p256dh: args.p256dh,
+      auth: args.auth,
+      user_agent: args.userAgent || null,
+      last_seen_at: now,
+      failed_count: 0,
+    }).eq('id', existing.id);
+    if (error) throw error;
+    return;
+  }
+
+  // New subscription
+  const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `push-${now}-${Math.random().toString(36).slice(2)}`;
+  const { error } = await sb.from('push_subscriptions').insert({
+    id,
+    user_id: args.userId,
+    username: args.username,
+    role: args.role,
+    owner_id: args.ownerId,
+    endpoint: args.endpoint,
+    p256dh: args.p256dh,
+    auth: args.auth,
+    user_agent: args.userAgent || null,
+    created_at: now,
+    last_seen_at: now,
+    failed_count: 0,
+  });
+  if (error) throw error;
+}
+
+/** Delete a subscription (user opted out, or browser unsubscribed). */
+export async function deletePushSubscription(endpoint: string): Promise<void> {
+  if (!endpoint) return;
+  const sb = getSupabase();
+  const { error } = await sb.from('push_subscriptions').delete().eq('endpoint', endpoint);
+  if (error) console.error('[deletePushSubscription]', error);
+}
+
+/** Check if THIS browser has an active subscription. Used on app load to confirm state. */
+export async function hasPushSubscription(endpoint: string): Promise<boolean> {
+  if (!endpoint) return false;
+  const sb = getSupabase();
+  const { data, error } = await sb.from('push_subscriptions')
+    .select('id')
+    .eq('endpoint', endpoint)
+    .maybeSingle();
+  if (error) return false;
+  return !!data?.id;
 }
