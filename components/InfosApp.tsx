@@ -325,6 +325,9 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loggingIn, setLoggingIn] = useState<any>(null);
+  // v25.3: Show password toggle + forgot password modal
+  const [showPassword, setShowPassword] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
 
   const handle = async () => {
     setError(''); setBusy(true);
@@ -394,9 +397,64 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
           <label style={S.label}>Username</label>
           <TextInput value={username} onChange={(e: any) => setUsername(e.target.value)} placeholder="Enter username" autoFocus onKeyDown={(e: any) => e.key === 'Enter' && handle()} />
         </div>
-        <div style={{ marginBottom: '14px' }}>
+        <div style={{ marginBottom: '6px' }}>
           <label style={S.label}>Password</label>
-          <TextInput type="password" value={password} onChange={(e: any) => setPassword(e.target.value)} placeholder="Enter password" onKeyDown={(e: any) => e.key === 'Enter' && handle()} />
+          {/* v25.3: Show/hide password toggle. The eye icon is positioned
+              absolutely inside a relative wrapper, with right-padding on the
+              input so the typed password doesn't sit underneath the icon. */}
+          <div style={{ position: 'relative' }}>
+            <TextInput
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e: any) => setPassword(e.target.value)}
+              placeholder="Enter password"
+              onKeyDown={(e: any) => e.key === 'Enter' && handle()}
+              style={{ paddingRight: '44px' }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              title={showPassword ? 'Hide password' : 'Show password'}
+              style={{
+                position: 'absolute',
+                right: '4px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '6px 10px',
+                fontSize: '17px',
+                color: C.textSecondary,
+                lineHeight: 1,
+              }}
+            >
+              {showPassword ? '🙈' : '👁'}
+            </button>
+          </div>
+        </div>
+        {/* v25.3: Forgot password link — opens an info modal explaining the
+            current contact-Zeus flow. Real reset request flow is planned but
+            requires hashed-password migration first. */}
+        <div style={{ textAlign: 'right', marginBottom: '14px' }}>
+          <button
+            type="button"
+            onClick={() => setForgotOpen(true)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: C.accent,
+              fontSize: '12.5px',
+              cursor: 'pointer',
+              padding: '4px 0',
+              fontWeight: 500,
+              textDecoration: 'underline',
+              fontFamily: 'inherit',
+            }}
+          >
+            Forgot password?
+          </button>
         </div>
         {error && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '12px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{error}</div>}
         <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
@@ -404,6 +462,36 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
           <Btn primary onClick={handle} disabled={busy} style={{ flex: onCancel ? 1 : undefined, width: onCancel ? undefined : '100%', opacity: busy ? 0.7 : 1 }}>{busy ? 'Signing in…' : 'Sign in'}</Btn>
         </div>
       </div>
+
+      {/* v25.3: Forgot password info modal. Shown when user clicks the link.
+          For now this is informational only — explains how to recover access.
+          Future: when password hashing is added, this becomes a request form
+          that creates a row in password_reset_requests for Zeus to approve. */}
+      {forgotOpen && (
+        <div onClick={() => setForgotOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 10000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '14px', maxWidth: '440px', width: '100%', boxShadow: 'var(--shadow-pop)', padding: '20px 22px' }}>
+            <div style={{ fontSize: '17px', fontWeight: 700, marginBottom: '10px', letterSpacing: '-0.01em' }}>
+              🔑 Forgot your password?
+            </div>
+            <div style={{ fontSize: '13.5px', color: C.textSecondary, lineHeight: 1.6, marginBottom: '16px' }}>
+              <p style={{ margin: '0 0 10px' }}>
+                Password recovery is handled by your workspace admin. Contact <strong>Zeus</strong> (the main admin) and ask them to reset your password.
+              </p>
+              <p style={{ margin: '0 0 10px' }}>
+                <strong>If you are a co-admin:</strong> only Zeus can reset co-admin passwords. Send Zeus a message with your username, and they&apos;ll set a new password for you.
+              </p>
+              <p style={{ margin: 0 }}>
+                <strong>If you are a sub-admin:</strong> contact your workspace co-admin or Zeus to reset it.
+              </p>
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <Btn primary onClick={() => setForgotOpen(false)} style={{ fontSize: '13px' }}>Got it</Btn>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1713,7 +1801,9 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
           zIndex: 1000, overflow: 'hidden',
           maxHeight: '70vh', display: 'flex', flexDirection: 'column',
         }}>
-          {/* Header */}
+          {/* Header. v25.3: 'X' close button shows the dropdown is dismissable
+              when displayed fullscreen on phone. On desktop it's still useful
+              as an explicit close affordance. */}
           <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
             <div style={{ fontSize: '14px', fontWeight: 600 }}>Notifications</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1726,6 +1816,10 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
               <button onClick={() => setShowPrefs((p) => !p)} type="button" title="Notification preferences" aria-label="Notification preferences"
                 style={{ background: showPrefs ? C.accentSoft : 'transparent', border: 'none', color: C.textSecondary, fontSize: '14px', cursor: 'pointer', padding: '4px 6px', borderRadius: '4px' }}>
                 ⚙
+              </button>
+              <button onClick={() => setOpen(false)} type="button" title="Close" aria-label="Close"
+                style={{ background: 'transparent', border: 'none', color: C.textTertiary, fontSize: '20px', cursor: 'pointer', padding: '4px 8px', borderRadius: '4px', lineHeight: 1 }}>
+                ×
               </button>
             </div>
           </div>

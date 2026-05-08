@@ -48,6 +48,8 @@ export default function PrivacyPolicyPage() {
         <li><strong>Workspace content:</strong> notices, game entries, backend entries, and Id &amp; Pass credentials (game passwords or account credentials) you create within the app.</li>
         <li><strong>Sub-admin assignments:</strong> which sub-admins are assigned to which entries.</li>
         <li><strong>Copy &amp; Paste entries:</strong> short-lived credential snippets shared between your own devices, automatically deleted after 5 minutes.</li>
+        <li><strong>Device sessions:</strong> a randomly-generated device ID, browser/OS info, and timestamps so admins can see active sessions and force-logout devices. No personal identifiers.</li>
+        <li><strong>Push subscriptions (optional):</strong> if you opt in to push notifications, we store the browser&apos;s push endpoint and encryption keys so we can deliver notifications to your device.</li>
         <li><strong>Theme preference:</strong> light or dark mode, stored locally on your device only.</li>
       </ul>
       <p>
@@ -86,16 +88,19 @@ export default function PrivacyPolicyPage() {
       <ul style={UL}>
         <li>Active workspace data is retained until manually deleted by an admin.</li>
         <li>Copy &amp; Paste entries are automatically deleted from the database 5 minutes after they are created.</li>
-        <li>When a sub-admin account is deleted, all their personal data (Copy &amp; Paste entries) is also deleted.</li>
+        <li>Soft-deleted items (Trash) are kept for 30 days before being permanently purged.</li>
+        <li>Device session rows older than 30 days are automatically pruned.</li>
+        <li>When a sub-admin account is deleted, all their personal data (Copy &amp; Paste entries, sessions) is also deleted.</li>
         <li>When a co-admin&apos;s workspace is deleted, all sub-admins, content, and Copy &amp; Paste entries within that workspace are cascade-deleted.</li>
         <li>You may request full deletion of your account and data by contacting us at the email shown in the app&apos;s About section.</li>
       </ul>
 
       <h2 style={H2}>6. Your rights</h2>
       <ul style={UL}>
-        <li><strong>Access:</strong> admins can export their entire workspace as a JSON file via the in-app Settings &gt; Backup feature.</li>
+        <li><strong>Access:</strong> admins can export their entire workspace as a JSON file via the in-app Settings &gt; Backup &amp; Data feature.</li>
         <li><strong>Deletion:</strong> admins can delete sub-admins, individual entries, or entire co-admin workspaces from within the app.</li>
         <li><strong>Correction:</strong> all content can be edited directly within the app.</li>
+        <li><strong>Notification opt-out:</strong> you can disable in-app sound, browser notifications, and push notifications at any time from the notification bell preferences.</li>
       </ul>
 
       <h2 style={H2}>7. Children&apos;s privacy</h2>

@@ -153,21 +153,30 @@ input, textarea, button, select { font-family: inherit; }
   .infos-settings-wrapper { flex-direction: column !important; }
 }
 
-/* v25.1: Bulletproof dropdown positioning on small screens.
-   The bell + user dropdowns anchor to right:0 of their parent button on
-   desktop. On phones the parent buttons sit between other UI, so right:0
-   anchors mid-screen and the dropdown overflows the LEFT edge of the
-   viewport. Switch to position:fixed with explicit viewport edges.
+/* v25.3: Bell + user dropdowns fullscreen on phone.
+   On wide screens, these anchor next to their button (right:0). On phones
+   the dropdowns become FULL-SCREEN overlays for max readability — covers
+   the entire viewport with the content scrollable inside. The header sticks
+   at the top so the close button is always reachable.
 */
 @media (max-width: 600px) {
   .infos-bell-dropdown,
   .infos-user-dropdown {
     position: fixed !important;
-    top: 60px !important;            /* under header */
-    left: 12px !important;
-    right: 12px !important;
-    width: auto !important;
+    inset: 0 !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    height: 100dvh !important;       /* dvh handles mobile address bar */
     max-width: none !important;
+    max-height: none !important;
     min-width: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding-top: env(safe-area-inset-top, 0px) !important;
   }
 }
