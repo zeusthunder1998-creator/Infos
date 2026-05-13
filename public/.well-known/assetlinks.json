@@ -3,10 +3,9 @@
     "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
-      "package_name": "app.vercel.infos_work.twa",
+      "package_name": "app.vercel.infos_delta.twa",
       "sha256_cert_fingerprints": [
-        "0E:08:DB:35:52:0A:E3:B8:54:DC:1F:2E:1E:F1:9F:06:94:8E:36:DA:F3:6C:DD:47:EA:87:31:62:BB:54:02:19",
-        "0F:88:C6:40:E6:97:25:F3:7C:6A:C6:29:4B:8E:79:F5:65:F1:FB:47:44:52:95:9E:BE:50:EE:09:CB:9C:37:1F"
+        "E6:53:35:94:27:E8:DA:0D:89:65:57:9D:1F:48:AB:25:1F:0C:4D:EE:91:87:E0:5D:E8:2B:A5:B4:C3:ED:2D:3C"
       ]
     }
   }

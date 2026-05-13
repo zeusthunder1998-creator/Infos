@@ -106,12 +106,12 @@ export function BulkAssignModal({
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '10px 14px' }}>
           {entries.length === 0 && (
-            <div style={{ ...S.empty, margin: '1rem 0' }}>No entries yet. Create some in Notice, Backend, Games, or Id & Pass first.</div>
+            <div style={{ ...S.empty, margin: '1rem 0' }}>No entries yet. Create some in Notice, System, Games, or Id & Pass first.</div>
           )}
           {(['notices', 'backend', 'games', 'idpass'] as const).map((t) => {
             const items = byTable[t];
             if (items.length === 0) return null;
-            const labels: Record<typeof t, string> = { notices: 'Notices', backend: 'Backend', games: 'Games', idpass: 'Id & Pass' };
+            const labels: Record<typeof t, string> = { notices: 'Notices', backend: 'System', games: 'Games', idpass: 'Id & Pass' };
             return (
               <div key={t} style={{ marginBottom: '12px' }}>
                 <div style={{ fontSize: '11px', color: C.textTertiary, padding: '8px 6px 4px', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>{labels[t]}</div>

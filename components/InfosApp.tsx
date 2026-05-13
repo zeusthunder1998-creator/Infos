@@ -536,7 +536,7 @@ function UserGuideModal({ open, onClose, user }: any) {
       <div style={para}>Post announcements for your sub-admins. Assign to specific sub-admins or broadcast to all.</div>
       <div style={tip}>💡 <strong>Pin important notices</strong> using the 📌 button. Pinned notices stay at the top regardless of date.</div>
 
-      <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
+      <div style={sectionTitle}>⚙️ System &amp; 🎮 Games tabs</div>
       <div style={para}>Manage links and resources for your sub-admins.</div>
       <ul style={list}>
         <li>Tap <strong>+ Add</strong> to create entries.</li>
@@ -561,13 +561,13 @@ function UserGuideModal({ open, onClose, user }: any) {
       </ul>
 
       <div style={sectionTitle}>🔍 Search</div>
-      <div style={para}>The search bar above the tabs searches Notices, Backend, Games, and Id&amp;Pass simultaneously across your workspace.</div>
+      <div style={para}>The search bar above the tabs searches Notices, System, Games, and Id&amp;Pass simultaneously across your workspace.</div>
 
       <div style={sectionTitle}>🔔 Notification bell</div>
       <div style={para}>Click the bell to see new content in your workspace. Click ⚙ to choose which categories to be notified about.</div>
 
       <div style={sectionTitle}>🗑 Trash</div>
-      <div style={para}>Settings → Trash. Deleted entries from Backend, Games, Id&amp;Pass, and Notices are kept here for 30 days. Restore or permanently delete.</div>
+      <div style={para}>Settings → Trash. Deleted entries from System, Games, Id&amp;Pass, and Notices are kept here for 30 days. Restore or permanently delete.</div>
 
       <div style={sectionTitle}>⚙️ Settings</div>
       <div style={para}>Change your password, switch theme, import/export workspace data, edit About Us.</div>
@@ -593,7 +593,7 @@ function UserGuideModal({ open, onClose, user }: any) {
       <div style={para}>Post announcements for your sub-admins. Assign to specific sub-admins or broadcast to all.</div>
       <div style={tip}>💡 <strong>Pin important notices</strong> using the 📌 button. Pinned notices stay at the top regardless of date.</div>
 
-      <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
+      <div style={sectionTitle}>⚙️ System &amp; 🎮 Games tabs</div>
       <div style={para}>Manage links and resources for your sub-admins.</div>
       <ul style={list}>
         <li>Tap <strong>+ Add</strong> to create entries.</li>
@@ -614,7 +614,7 @@ function UserGuideModal({ open, onClose, user }: any) {
       <div style={para}>Create sub-admins who can view entries assigned to them in your workspace.</div>
 
       <div style={sectionTitle}>🔍 Search</div>
-      <div style={para}>The search bar above the tabs searches Notices, Backend, Games, and Id&amp;Pass simultaneously inside your workspace.</div>
+      <div style={para}>The search bar above the tabs searches Notices, System, Games, and Id&amp;Pass simultaneously inside your workspace.</div>
 
       <div style={sectionTitle}>🔔 Notification bell</div>
       <div style={para}>Click the bell to see new content. Click ⚙ to choose which categories to be notified about.</div>
@@ -637,7 +637,7 @@ function UserGuideModal({ open, onClose, user }: any) {
       <div style={sectionTitle}>👁 What you can see</div>
       <ul style={list}>
         <li>Notices that your admin posted to you (or to all sub-admins).</li>
-        <li>Backend, Games, and Id&amp;Pass entries that your admin assigned to you.</li>
+        <li>System, Games, and Id&amp;Pass entries that your admin assigned to you.</li>
         <li>Your own Copy &amp; Paste entries (private, visible only to you).</li>
       </ul>
       <div style={para}>Anything not assigned to you stays hidden. You cannot see other sub-admins&apos; data.</div>
@@ -653,7 +653,7 @@ function UserGuideModal({ open, onClose, user }: any) {
       <div style={para}>Quickly share a credential between your own multiple devices. Type the game name, username, password — click <strong>Publish</strong>. The entry appears instantly on every device where you&apos;re signed in. Auto-deletes after 5 minutes.</div>
       <div style={tip}>💡 The <strong>Copy</strong> button on each entry copies all 3 fields formatted as plain text, ready to paste anywhere.</div>
 
-      <div style={sectionTitle}>🔧 Backend &amp; 🎮 Games tabs</div>
+      <div style={sectionTitle}>⚙️ System &amp; 🎮 Games tabs</div>
       <div style={para}>View links and resources your admin has assigned to you. Click links to open them. Read-only — only your admin can edit.</div>
 
       <div style={sectionTitle}>🔐 Id &amp; Pass tab</div>
@@ -716,7 +716,7 @@ function WelcomeModal({ open, onClose, user, onOpenGuide }: any) {
         </div>
         <div style={{ textAlign: 'left', fontSize: '13.5px', color: C.textSecondary, lineHeight: 1.7, marginBottom: '20px', padding: '12px 14px', background: C.softBg, borderRadius: '10px' }}>
           <div>📢 <strong>Notice</strong> — announcements for you</div>
-          <div>🔧 <strong>Backend</strong> &amp; 🎮 <strong>Games</strong> — links assigned to you</div>
+          <div>⚙️ <strong>System</strong> &amp; 🎮 <strong>Games</strong> — links assigned to you</div>
           <div>🔐 <strong>Id &amp; Pass</strong> — account credentials</div>
           {user?.role === 'sub' && <div style={{ marginTop: '8px' }}>📋 <strong>Copy &amp; Paste</strong> (in Notice tab) — share credentials between your own devices</div>}
         </div>
@@ -808,7 +808,7 @@ function GlobalSearchModal({ open, onClose, user, notices, backend, games, idpas
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px 20px' }}>
           {!q.trim() ? (
             <div style={{ textAlign: 'center', padding: '40px 16px', color: C.textTertiary, fontSize: '13.5px' }}>
-              Start typing to search Notices, Backend, Games, and Id &amp; Pass at the same time.
+              Start typing to search Notices, System, Games, and Id &amp; Pass at the same time.
             </div>
           ) : totalCount === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px 16px', color: C.textTertiary, fontSize: '13.5px' }}>
@@ -821,7 +821,7 @@ function GlobalSearchModal({ open, onClose, user, notices, backend, games, idpas
               </div>
               <Section title="📢 Notices" items={results!.notices} tabId="notice"
                 renderText={(x: any) => ({ primary: x.title, secondary: (x.body || '').slice(0, 80) + ((x.body || '').length > 80 ? '…' : '') })} />
-              <Section title="🔧 Backend" items={results!.backend} tabId="backend"
+              <Section title="⚙️ System" items={results!.backend} tabId="backend"
                 renderText={(x: any) => ({ primary: x.gameName + (x.shortName ? ` (${x.shortName})` : ''), secondary: x.link })} />
               <Section title="🎮 Games" items={results!.games} tabId="games"
                 renderText={(x: any) => ({ primary: x.gameName + (x.shortName ? ` (${x.shortName})` : ''), secondary: x.link })} />
@@ -1001,7 +1001,7 @@ function TrashModal({ open, onClose, workspaceId, onAfterChange }: any) {
   const counts = { notices: nt.length, backend: bk.length, games: gm.length, idpass: ip.length };
   const tabs: Array<{ key: typeof tab; label: string; count: number }> = [
     { key: 'notices', label: '📢 Notices', count: counts.notices },
-    { key: 'backend', label: '🔧 Backend', count: counts.backend },
+    { key: 'backend', label: '⚙️ System', count: counts.backend },
     { key: 'games', label: '🎮 Games', count: counts.games },
     { key: 'idpass', label: '🔐 Id & Pass', count: counts.idpass },
   ];
@@ -1373,7 +1373,7 @@ function WhatChangedModal({ open, onClose, user, notices, backend, games, idpass
         });
       });
     };
-    collectEntries(backend, 'backend', '🔧 Backend entry', (e) => e.gameName || '(unnamed)');
+    collectEntries(backend, 'backend', '⚙️ System entry', (e) => e.gameName || '(unnamed)');
     collectEntries(games, 'games', '🎮 Game entry', (e) => e.gameName || '(unnamed)');
     collectEntries(idpass, 'idpass', '🔐 Id & Pass entry', (e) => e.game || '(unnamed)');
 
@@ -1742,7 +1742,7 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
         });
       });
     };
-    if (prefs.backend) collect(backend, 'backend', () => '🔧 Backend entry', (e) => e.gameName || '(unnamed)');
+    if (prefs.backend) collect(backend, 'backend', () => '⚙️ System entry', (e) => e.gameName || '(unnamed)');
     if (prefs.games)   collect(games, 'games', () => '🎮 Game entry', (e) => e.gameName || '(unnamed)');
     if (prefs.idpass)  collect(idpass, 'idpass', (e: any) => e.section === 'accounts' ? '🔐 Account credential' : '🎮 Game credential', (e: any) => e.game || '(unnamed)');
 
@@ -1916,7 +1916,7 @@ function NotificationBell({ user, workspaceId, notices, backend, games, idpass, 
               <div style={{ fontSize: '11px', fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>In-app notifications</div>
               {[
                 { key: 'notice' as const, label: '📢 Notices' },
-                { key: 'backend' as const, label: '🔧 Backend entries' },
+                { key: 'backend' as const, label: '⚙️ System entries' },
                 { key: 'games' as const, label: '🎮 Game entries' },
                 { key: 'idpass' as const, label: '🔐 Id & Pass entries' },
               ].map(({ key, label }) => (
@@ -2044,7 +2044,18 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
         <span style={{ fontSize: '10px', color: C.textTertiary, marginLeft: '-2px' }}>▾</span>
       </button>
       {open && (
-        <div className="infos-dropdown infos-user-dropdown" style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: '280px', maxWidth: 'calc(100vw - 24px)', background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '12px', boxShadow: 'var(--shadow-pop)', zIndex: 1000, overflow: 'hidden' }}>
+        <div className="infos-dropdown infos-user-dropdown" style={{ position: 'absolute', right: 0, top: 'calc(100% + 8px)', minWidth: '280px', maxWidth: 'calc(100vw - 24px)', background: C.cardBg, border: `1px solid ${C.borderStrong}`, borderRadius: '12px', boxShadow: 'var(--shadow-pop)', zIndex: 1000, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {/* v25.4: Header bar with close button. On phone the dropdown is
+              fullscreen, so the close button is essential. On desktop it's
+              still a useful explicit close affordance. */}
+          <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+            <div style={{ fontSize: '14px', fontWeight: 600 }}>Account</div>
+            <button onClick={() => setOpen(false)} type="button" title="Close" aria-label="Close"
+              style={{ background: 'transparent', border: 'none', color: C.textTertiary, fontSize: '20px', cursor: 'pointer', padding: '4px 8px', borderRadius: '4px', lineHeight: 1 }}>
+              ×
+            </button>
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto' }}>
           {/* 1. About Us / User Guide / Settings — v22.0: Search moved to main page above tabs */}
           <div style={{ padding: '6px 4px', borderBottom: `1px solid ${C.border}` }}>
             <button onClick={() => { onOpenAbout(); setOpen(false); }} style={menuBtnStyle}
@@ -2122,6 +2133,7 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
             <button onClick={() => { onSignOutAll(); setOpen(false); }} style={{ ...menuBtnStyle, color: C.danger }}
               onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.dangerSoft)}
               onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>Sign out of all accounts</button>
+          </div>
           </div>
         </div>
       )}
@@ -2202,9 +2214,15 @@ function EntryForm({ fields, subs, onSubmit, submitLabel = 'Add' }: any) {
   const [v, setV] = useState<any>(init);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // v25.5: Honor field.optional flag for shortName and similar non-essential fields.
+  // Only fields without optional=true must be filled.
   const handle = async () => {
     setErr('');
-    if (fields.some((f: any) => !v[f.key].trim())) { setErr('All fields are required'); return; }
+    const requiredFields = fields.filter((f: any) => !f.optional);
+    if (requiredFields.some((f: any) => !v[f.key].trim())) {
+      setErr('Please fill in all required fields');
+      return;
+    }
     if (v.assignees.length === 0) { setErr('Assign to at least one sub-admin or "Assign to all"'); return; }
     setBusy(true);
     try { await onSubmit(v); setV(init()); }
@@ -2216,7 +2234,7 @@ function EntryForm({ fields, subs, onSubmit, submitLabel = 'Add' }: any) {
       <div className="infos-grid3" style={S.grid3}>
         {fields.map((f: any) => (
           <div key={f.key}>
-            <label style={S.label}>{f.label}</label>
+            <label style={S.label}>{f.label}{f.optional && <span style={{ fontWeight: 400, color: C.textTertiary, marginLeft: '4px' }}>(optional)</span>}</label>
             <TextInput value={v[f.key]} onChange={(e: any) => setV({ ...v, [f.key]: e.target.value })} placeholder={f.placeholder || f.label} />
           </div>
         ))}
@@ -2447,7 +2465,7 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
           <CopyButton value={e.link} label="link" />
         </div>
         {e.description && <div style={S.descBox}>{e.description}</div>}
-        {isAdmin && <AssigneeList assignees={e.assignees || []} subs={subs} />}
+        <AssigneeList assignees={e.assignees || []} subs={subs} />
         <Timestamp createdAt={e.createdAt} updatedAt={e.updatedAt} />
       </div>
       {isAdmin && !selectMode && (
@@ -2463,7 +2481,7 @@ function GameListTabInner({ table, user, subs, entries, setEntries, reload, empt
     <div>
       {confirmEl}
       <EditGameModal open={!!editing} entry={editing} subs={subs} onClose={() => setEditing(null)} onSave={saveEdit} />
-      {isAdmin && <EntryForm fields={[{ key: 'gameName', label: 'Game name' }, { key: 'shortName', label: 'Short name' }, { key: 'link', label: 'Link', placeholder: 'https://...' }]} subs={subs} onSubmit={add} />}
+      {isAdmin && <EntryForm fields={[{ key: 'gameName', label: 'Game name' }, { key: 'shortName', label: 'Short name', optional: true }, { key: 'link', label: 'Link', placeholder: 'https://...' }]} subs={subs} onSubmit={add} />}
       {entries.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search games, links, descriptions…" />}
       {isAdmin && subOnlyForFilter.length > 0 && entries.length > 0 && (
         <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
@@ -2645,7 +2663,7 @@ function IdPassTabInner({ user, subs, entries, setEntries, reload }: any) {
           <CopyButton value={e.password} />
         </div>
         {e.description && <div style={S.descBox}>{e.description}</div>}
-        {isAdmin && <AssigneeList assignees={e.assignees || []} subs={subs} />}
+        <AssigneeList assignees={e.assignees || []} subs={subs} />
         <Timestamp createdAt={e.createdAt} updatedAt={e.updatedAt} />
       </div>
       {isAdmin && !selectMode && (
@@ -3052,7 +3070,9 @@ function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes
             <CopyButton value={x.link} label="link" />
           </div>
         )}
-        {isAdmin && <AssigneeList assignees={x.recipients || []} subs={subs} />}
+        {/* v25.5: Show assignees to everyone (including sub-admins) so they
+            can see who else this notice was sent to. */}
+        <AssigneeList assignees={x.recipients || []} subs={subs} />
         <Timestamp createdAt={x.createdAt} updatedAt={x.updatedAt} />
       </div>
       {isAdmin && !selectMode && (
@@ -3244,7 +3264,7 @@ function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, no
     const lines: string[] = [];
     if (counts.subAdmins) lines.push(`\u2022 ${counts.subAdmins} sub-admin${counts.subAdmins === 1 ? '' : 's'}`);
     if (counts.notices)   lines.push(`\u2022 ${counts.notices} notice${counts.notices === 1 ? '' : 's'}`);
-    if (counts.backend)   lines.push(`\u2022 ${counts.backend} backend entr${counts.backend === 1 ? 'y' : 'ies'}`);
+    if (counts.backend)   lines.push(`\u2022 ${counts.backend} system entr${counts.backend === 1 ? 'y' : 'ies'}`);
     if (counts.games)     lines.push(`\u2022 ${counts.games} game entr${counts.games === 1 ? 'y' : 'ies'}`);
     if (counts.idpass)    lines.push(`\u2022 ${counts.idpass} credential${counts.idpass === 1 ? '' : 's'}`);
     const detailMsg = lines.length === 0
@@ -3627,14 +3647,18 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
         gap: '12px',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <button onClick={onClose} type="button" aria-label="Back"
+          <button onClick={onClose} type="button" aria-label="Back" title="Back to app"
             style={{
-              background: 'transparent', border: 'none', cursor: 'pointer',
-              padding: '6px 8px', borderRadius: '6px',
-              fontSize: '17px', color: C.textPrimary, lineHeight: 1,
-              display: 'flex', alignItems: 'center', gap: '4px',
-            }}>
-            ← <span style={{ fontSize: '14px', fontWeight: 500 }}>Back</span>
+              background: C.softBg, border: `1px solid ${C.border}`, cursor: 'pointer',
+              padding: '8px 14px', borderRadius: '8px',
+              fontSize: '14px', fontWeight: 600, color: C.textPrimary, lineHeight: 1,
+              display: 'flex', alignItems: 'center', gap: '6px',
+              fontFamily: 'inherit',
+            }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.border)}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}>
+            <span style={{ fontSize: '17px', lineHeight: 1 }}>←</span>
+            <span>Back</span>
           </button>
         </div>
         <div style={{ fontSize: '15px', fontWeight: 600, letterSpacing: '-0.01em' }}>Settings</div>
@@ -3804,7 +3828,7 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
               <div style={{ ...S.softCard, marginBottom: '1rem' }}>
                 <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px', letterSpacing: '-0.01em' }}>💾 Export &amp; restore</div>
                 <div style={{ fontSize: '13px', color: C.textSecondary, marginBottom: '14px' }}>
-                  Backup contains all your notices, backend entries, games, Id &amp; Pass entries, and sub-admins. Restore replaces existing data.
+                  Backup contains all your notices, system entries, games, Id &amp; Pass entries, and sub-admins. Restore replaces existing data.
                 </div>
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                   <Btn onClick={doExportAll} disabled={exporting}>{exporting ? 'Exporting…' : '↓ Export all data'}</Btn>
@@ -4138,8 +4162,8 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
         } else if (kind === 'backend') {
           newItems.push({
             kind, id: key,
-            title: 'New backend entry',
-            body: item.title || item.username || 'A new backend entry was assigned to you',
+            title: 'New system entry',
+            body: item.title || item.username || 'A new system entry was assigned to you',
           });
         } else if (kind === 'game') {
           newItems.push({
@@ -4223,7 +4247,7 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
 
   const tabs = [
     { id: 'notice', label: 'Notice' },
-    { id: 'backend', label: 'Backend' },
+    { id: 'backend', label: 'System' },
     { id: 'games', label: 'Games' },
     { id: 'idpass', label: 'Id & Pass' },
     ...(isAdmin ? [{ id: 'admins', label: 'Create Admin' }] : []),
@@ -4306,7 +4330,7 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
           </div>
         </div>
         {/* v22.0: Search bar moved from user menu to main page (above tabs).
-            Click to open the global search modal — searches Notices, Backend,
+            Click to open the global search modal — searches Notices, System,
             Games, and Id&Pass simultaneously. */}
         <button
           onClick={() => setSearchOpen(true)}
@@ -4328,7 +4352,7 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
           }}>
           <span style={{ fontSize: '15px', flexShrink: 0 }}>🔍</span>
           <span style={{ flex: 1 }}>Search everything…</span>
-          <span style={{ fontSize: '11px', color: C.textTertiary, opacity: 0.7, flexShrink: 0 }}>Notices · Backend · Games · Id&amp;Pass</span>
+          <span style={{ fontSize: '11px', color: C.textTertiary, opacity: 0.7, flexShrink: 0 }}>Notices · System · Games · Id&amp;Pass</span>
         </button>
         <div className="infos-tabs" style={S.tabs}>
           {tabs.map((t) => <button key={t.id} onClick={() => setTab(t.id)} className="infos-tab" style={tabStyle(tab === t.id)}>{t.label}</button>)}
@@ -4339,7 +4363,7 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
           </div>
         ) :
           tab === 'notice' ? <NoticeTab user={user} subs={subs} items={notices} setItems={setNotices} reload={reloaders.notices} pastes={pastes} setPastes={setPastes} reloadPastes={reloaders.paste_buffer} /> :
-          tab === 'backend' ? <GameListTab table="backend_entries" user={user} subs={subs} entries={backend} setEntries={setBackend} reload={reloaders.backend_entries} emptyMsg="No backend entries yet." /> :
+          tab === 'backend' ? <GameListTab table="backend_entries" user={user} subs={subs} entries={backend} setEntries={setBackend} reload={reloaders.backend_entries} emptyMsg="No system entries yet." /> :
           tab === 'games' ? <GameListTab table="game_entries" user={user} subs={subs} entries={games} setEntries={setGames} reload={reloaders.game_entries} emptyMsg="No games yet." /> :
           tab === 'idpass' ? <IdPassTab user={user} subs={subs} entries={idpass} setEntries={setIdpass} reload={reloaders.idpass_entries} /> :
           tab === 'admins' && isAdmin ? <CreateAdminPanel user={user} subs={subs} setSubs={setSubs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} reloadSubs={reloaders.sub_admins} /> : null}
