@@ -153,15 +153,16 @@ input, textarea, button, select { font-family: inherit; }
   .infos-settings-wrapper { flex-direction: column !important; }
 }
 
-/* v25.3: Bell + user dropdowns fullscreen on phone.
-   On wide screens, these anchor next to their button (right:0). On phones
-   the dropdowns become FULL-SCREEN overlays for max readability — covers
-   the entire viewport with the content scrollable inside. The header sticks
-   at the top so the close button is always reachable.
+/* v25.6: Hide scrollbar visually but keep scrolling functional on mobile pills.
+   Polishes the horizontal scrollable settings tabs row. */
+.infos-settings-pills::-webkit-scrollbar { height: 0; display: none; }
+.infos-settings-pills { scrollbar-width: none; -ms-overflow-style: none; }
+
+/* v25.3: Bell dropdown fullscreen on phone, anchored on desktop.
+   v25.6: User/profile dropdown is ALWAYS fullscreen (per user request).
 */
 @media (max-width: 600px) {
-  .infos-bell-dropdown,
-  .infos-user-dropdown {
+  .infos-bell-dropdown {
     position: fixed !important;
     inset: 0 !important;
     top: 0 !important;
@@ -170,7 +171,7 @@ input, textarea, button, select { font-family: inherit; }
     bottom: 0 !important;
     width: 100vw !important;
     height: 100vh !important;
-    height: 100dvh !important;       /* dvh handles mobile address bar */
+    height: 100dvh !important;
     max-width: none !important;
     max-height: none !important;
     min-width: 0 !important;
@@ -179,4 +180,24 @@ input, textarea, button, select { font-family: inherit; }
     box-shadow: none !important;
     padding-top: env(safe-area-inset-top, 0px) !important;
   }
+}
+
+/* v25.6: User dropdown — fullscreen on EVERY screen size */
+.infos-user-dropdown {
+  position: fixed !important;
+  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-width: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding-top: env(safe-area-inset-top, 0px) !important;
 }

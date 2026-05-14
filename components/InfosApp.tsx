@@ -386,12 +386,42 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
   }
 
   return (
-    <div style={S.shell}>
-      <div style={S.card}>
+    <div style={{
+      // v25.7: Polished login backdrop — soft purple-to-white radial gradient.
+      // Sits above the default shell so it feels like a hero landing screen
+      // instead of a plain form.
+      minHeight: '100dvh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '1rem',
+      background: 'radial-gradient(circle at 50% 0%, rgba(124, 100, 245, 0.15), transparent 60%), var(--shell-bg)',
+      position: 'relative',
+    }}>
+      <div style={{
+        ...S.card,
+        // Soften the card, slightly larger shadow for depth
+        boxShadow: '0 1px 3px rgba(0,0,0,0.04), 0 12px 40px rgba(124, 100, 245, 0.08)',
+        maxWidth: '420px',
+        padding: '2rem 1.75rem',
+      }}>
         <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
-          <Image src="/logo.png" alt="" width={72} height={72} priority />
-          <div style={{ fontSize: '28px', fontWeight: 700, letterSpacing: '-0.03em', marginTop: '14px' }}>Infos</div>
-          <div style={{ fontSize: '14px', color: C.textSecondary, marginTop: '4px', fontWeight: 500 }}>{subtitle || 'Sign in to your account'}</div>
+          {/* v25.7: Icon card — gives the logo a "branded badge" feel */}
+          <div style={{
+            width: '78px',
+            height: '78px',
+            margin: '0 auto 14px',
+            borderRadius: '20px',
+            background: 'linear-gradient(135deg, #947AFA 0%, #543CC8 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 8px 24px rgba(124, 100, 245, 0.32)',
+          }}>
+            <Image src="/icon-192.png" alt="" width={56} height={56} priority style={{ borderRadius: '14px' }} />
+          </div>
+          <div style={{ fontSize: '30px', fontWeight: 700, letterSpacing: '-0.03em', marginTop: '4px' }}>Infos</div>
+          <div style={{ fontSize: '14px', color: C.textSecondary, marginTop: '6px', fontWeight: 500 }}>{subtitle || 'Sign in to your account'}</div>
         </div>
         <div style={{ marginBottom: '14px' }}>
           <label style={S.label}>Username</label>
@@ -768,31 +798,6 @@ function GlobalSearchModal({ open, onClose, user, notices, backend, games, idpas
   if (!open) return null;
   const totalCount = results ? (results.notices.length + results.backend.length + results.games.length + results.idpass.length) : 0;
 
-  const Section = ({ title, items, tabId, renderText }: any) => {
-    if (!items || items.length === 0) return null;
-    return (
-      <div style={{ marginBottom: '16px' }}>
-        <div style={{ fontSize: '11px', fontWeight: 700, color: C.textTertiary, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px', padding: '0 4px' }}>
-          {title} ({items.length})
-        </div>
-        {items.slice(0, 8).map((item: any) => (
-          <button key={item.id} onClick={() => { onNavigate(tabId); onClose(); }} type="button"
-            style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: '4px', border: `1px solid ${C.border}`, background: C.cardBg, borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: C.textPrimary }}
-            onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
-            onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.cardBg)}>
-            <div style={{ fontWeight: 600, marginBottom: '2px' }}>{renderText(item).primary}</div>
-            {renderText(item).secondary && <div style={{ fontSize: '12px', color: C.textTertiary }}>{renderText(item).secondary}</div>}
-          </button>
-        ))}
-        {items.length > 8 && (
-          <div style={{ fontSize: '11.5px', color: C.textTertiary, textAlign: 'center', padding: '4px', fontStyle: 'italic' }}>
-            +{items.length - 8} more — open the {title.replace(/[^A-Za-z &]/g, '').trim()} tab to see all
-          </div>
-        )}
-      </div>
-    );
-  };
-
   return (
     <div className="infos-modal-backdrop" onClick={onClose}
       style={{ position: 'fixed', inset: 0, background: 'var(--modal-backdrop)', zIndex: 9999, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '5vh 1rem 1rem' }}>
@@ -801,14 +806,14 @@ function GlobalSearchModal({ open, onClose, user, notices, backend, games, idpas
         <div style={{ padding: '14px 16px', borderBottom: `1px solid ${C.border}`, display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '18px', color: C.textTertiary }}>🔍</span>
           <input ref={inputRef} type="text" value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder="Search across all tabs…"
+            placeholder="Search Everything…"
             style={{ flex: 1, fontSize: '15px', border: 'none', outline: 'none', background: 'transparent', color: C.textPrimary, fontFamily: 'inherit' }} />
           <button onClick={onClose} type="button" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '18px', color: C.textTertiary, padding: '4px 8px' }}>×</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px 20px' }}>
           {!q.trim() ? (
             <div style={{ textAlign: 'center', padding: '40px 16px', color: C.textTertiary, fontSize: '13.5px' }}>
-              Start typing to search Notices, System, Games, and Id &amp; Pass at the same time.
+              Start typing to search everything at once.
             </div>
           ) : totalCount === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px 16px', color: C.textTertiary, fontSize: '13.5px' }}>
@@ -819,14 +824,56 @@ function GlobalSearchModal({ open, onClose, user, notices, backend, games, idpas
               <div style={{ fontSize: '11.5px', color: C.textTertiary, marginBottom: '12px', fontWeight: 600 }}>
                 {totalCount} match{totalCount === 1 ? '' : 'es'}
               </div>
-              <Section title="📢 Notices" items={results!.notices} tabId="notice"
-                renderText={(x: any) => ({ primary: x.title, secondary: (x.body || '').slice(0, 80) + ((x.body || '').length > 80 ? '…' : '') })} />
-              <Section title="⚙️ System" items={results!.backend} tabId="backend"
-                renderText={(x: any) => ({ primary: x.gameName + (x.shortName ? ` (${x.shortName})` : ''), secondary: x.link })} />
-              <Section title="🎮 Games" items={results!.games} tabId="games"
-                renderText={(x: any) => ({ primary: x.gameName + (x.shortName ? ` (${x.shortName})` : ''), secondary: x.link })} />
-              <Section title="🔐 Id & Pass" items={results!.idpass} tabId="idpass"
-                renderText={(x: any) => ({ primary: x.game + (x.shortName ? ` (${x.shortName})` : ''), secondary: `${x.username} • ${x.section === 'accounts' ? 'Account' : 'Game'}` })} />
+              {/* v25.6: Flat unified result list. Per user request, do NOT group
+                  by category (Notices/System/Games/Id&Pass). Show ALL matches
+                  as one combined list. Each row has a small label indicating
+                  which tab it lives in. */}
+              {[
+                ...results!.notices.map((x: any) => ({
+                  id: 'notice-' + x.id,
+                  primary: x.title,
+                  secondary: (x.body || '').slice(0, 80) + ((x.body || '').length > 80 ? '…' : ''),
+                  label: '📢 Notice',
+                  tabId: 'notice',
+                })),
+                ...results!.backend.map((x: any) => ({
+                  id: 'backend-' + x.id,
+                  primary: x.gameName + (x.shortName ? ` (${x.shortName})` : ''),
+                  secondary: x.link,
+                  label: '⚙️ System',
+                  tabId: 'backend',
+                })),
+                ...results!.games.map((x: any) => ({
+                  id: 'game-' + x.id,
+                  primary: x.gameName + (x.shortName ? ` (${x.shortName})` : ''),
+                  secondary: x.link,
+                  label: '🎮 Games',
+                  tabId: 'games',
+                })),
+                ...results!.idpass.map((x: any) => ({
+                  id: 'idpass-' + x.id,
+                  primary: x.game + (x.shortName ? ` (${x.shortName})` : ''),
+                  secondary: `${x.username} • ${x.section === 'accounts' ? 'Account' : 'Game'}`,
+                  label: '🔐 Id & Pass',
+                  tabId: 'idpass',
+                })),
+              ].slice(0, 30).map((item: any) => (
+                <button key={item.id} onClick={() => { onNavigate(item.tabId); onClose(); }} type="button"
+                  style={{ display: 'block', width: '100%', textAlign: 'left', padding: '10px 12px', marginBottom: '6px', border: `1px solid ${C.border}`, background: C.cardBg, borderRadius: '8px', cursor: 'pointer', fontSize: '13px', color: C.textPrimary }}
+                  onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+                  onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.cardBg)}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' }}>
+                    <div style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.primary}</div>
+                    <div style={{ fontSize: '10.5px', color: C.textTertiary, fontWeight: 500, flexShrink: 0 }}>{item.label}</div>
+                  </div>
+                  {item.secondary && <div style={{ fontSize: '12px', color: C.textTertiary, marginTop: '2px' }}>{item.secondary}</div>}
+                </button>
+              ))}
+              {totalCount > 30 && (
+                <div style={{ fontSize: '11.5px', color: C.textTertiary, textAlign: 'center', padding: '8px', fontStyle: 'italic' }}>
+                  +{totalCount - 30} more — refine your search to see fewer results
+                </div>
+              )}
             </>
           )}
         </div>
@@ -2048,14 +2095,17 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
           {/* v25.4: Header bar with close button. On phone the dropdown is
               fullscreen, so the close button is essential. On desktop it's
               still a useful explicit close affordance. */}
-          <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
-            <div style={{ fontSize: '14px', fontWeight: 600 }}>Account</div>
+          <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexShrink: 0, background: C.cardBg }}>
+            <div style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.01em' }}>Account</div>
             <button onClick={() => setOpen(false)} type="button" title="Close" aria-label="Close"
-              style={{ background: 'transparent', border: 'none', color: C.textTertiary, fontSize: '20px', cursor: 'pointer', padding: '4px 8px', borderRadius: '4px', lineHeight: 1 }}>
+              style={{ background: C.softBg, border: `1px solid ${C.border}`, color: C.textPrimary, fontSize: '18px', cursor: 'pointer', padding: '4px 12px', borderRadius: '6px', lineHeight: 1, fontFamily: 'inherit' }}>
               ×
             </button>
           </div>
-          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <div style={{ flex: 1, overflowY: 'auto', background: C.softBg }}>
+          {/* v25.6: Wrap content in a max-width container so it's not stretched
+              full-screen on wide desktops. */}
+          <div style={{ maxWidth: '520px', margin: '0 auto', padding: '12px 0' }}>
           {/* 1. About Us / User Guide / Settings — v22.0: Search moved to main page above tabs */}
           <div style={{ padding: '6px 4px', borderBottom: `1px solid ${C.border}` }}>
             <button onClick={() => { onOpenAbout(); setOpen(false); }} style={menuBtnStyle}
@@ -2133,6 +2183,7 @@ function AccountSwitcher({ accounts, activeKey, user, onSwitch, onAddAccount, on
             <button onClick={() => { onSignOutAll(); setOpen(false); }} style={{ ...menuBtnStyle, color: C.danger }}
               onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.dangerSoft)}
               onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>Sign out of all accounts</button>
+          </div>
           </div>
           </div>
         </div>
@@ -2930,6 +2981,11 @@ function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes
   const [editing, setEditing] = useState<any>(null);
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
+  // v25.6: Filter by sub-admin recipient — same pattern as Backend/Games/IdPass tabs.
+  // Admins only; sub-admins only see notices addressed to them anyway.
+  const [filterSub, setFilterSub] = useState<'all' | string>('all');
+  // Pre-compute the sub-admins available for filtering (exclude co-admins).
+  const subOnlyForFilter = useMemo(() => subs.filter((s: any) => s.role !== 'co'), [subs]);
 
   // When the user opens the Copy & Paste sub-tab, run a one-shot purge of
   // any expired rows for this workspace. Also re-fetch immediately to clear
@@ -2942,7 +2998,11 @@ function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes
   }, [subTab]);
 
   const visible = useMemo(() => {
-    const base = isAdmin ? items : items.filter((x: any) => isVisibleToSub(x.recipients, user.id));
+    let base = isAdmin ? items : items.filter((x: any) => isVisibleToSub(x.recipients, user.id));
+    // v25.6: Apply sub-admin filter (admin only) — same as other tabs.
+    if (isAdmin && filterSub !== 'all') {
+      base = base.filter((x: any) => isVisibleToSub(x.recipients, filterSub));
+    }
     const search = q.trim().toLowerCase();
     const filtered = !search ? base : base.filter((x: any) =>
       (x.title || '').toLowerCase().includes(search) ||
@@ -2958,7 +3018,7 @@ function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes
       if (pinDiff !== 0) return pinDiff;
       return (a.sortOrder || 0) - (b.sortOrder || 0);
     });
-  }, [isAdmin, items, user, q]);
+  }, [isAdmin, items, user, q, filterSub]);
   const nextSortOrder = useMemo(() => (items.length ? Math.max(...items.map((x: any) => x.sortOrder || 0)) + 1 : 0), [items]);
 
   const add = async (vals: any) => {
@@ -3103,14 +3163,29 @@ function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes
         ? <div style={{ ...S.empty, marginBottom: '1.25rem' }}>Create sub-admins first to post notices.</div>
         : <NoticeEntryForm subs={subs} onSubmit={add} />)}
       {items.length > 0 && <SearchBar value={q} onChange={setQ} placeholder="Search notices…" />}
+      {/* v25.6: Filter by recipient sub-admin — admin only, same UX as other tabs. */}
+      {isAdmin && subOnlyForFilter.length > 0 && items.length > 0 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: C.textTertiary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '2px' }}>Filter:</span>
+          <button onClick={() => setFilterSub('all')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: filterSub === 'all' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: filterSub === 'all' ? C.accent : C.cardBg, color: filterSub === 'all' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: filterSub === 'all' ? 600 : 500 }}>All</button>
+          {subOnlyForFilter.map((s: any) => {
+            const on = filterSub === s.id;
+            return (
+              <button key={s.id} onClick={() => setFilterSub(s.id)} className="infos-pill"
+                style={{ padding: '5px 12px', fontSize: '12.5px', border: on ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: on ? C.accent : C.cardBg, color: on ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: on ? 600 : 500 }}>{s.username}</button>
+            );
+          })}
+        </div>
+      )}
       <SelectionToolbar isAdmin={isAdmin} inSelectMode={selectMode}
         onEnter={() => setSelectMode(true)} onExit={() => { setSelectMode(false); setSelected([]); }}
         selectedCount={selected.length} onBulkDelete={bulkDelete}
         onSelectAll={() => setSelected(visible.map((x: any) => x.id))}
         onDeselectAll={() => setSelected([])} totalVisible={visible.length} />
       {visible.length === 0 ? (
-        q.trim()
-          ? <EmptyState icon="🔍" title="No matches found" hint="Try a different search term." />
+        q.trim() || filterSub !== 'all'
+          ? <EmptyState icon="🔍" title="No matches found" hint="Try a different search term or filter." />
           : isAdmin
             ? <EmptyState icon="📢" title="No notices posted yet" hint="Use the form above to send your first notice to your sub-admins." />
             : <EmptyState icon="📭" title="No notices for you yet" hint="When your admin posts a notice for you, it'll appear here." />
@@ -3708,34 +3783,48 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
           })}
         </nav>
 
-        {/* Mobile pills — only visible on narrow screens via .infos-settings-pills */}
+        {/* Mobile pills — visible on narrow screens via .infos-settings-pills.
+            v25.6: Bigger pills, clearer active state, sticky to top of content. */}
         <div className="infos-settings-pills" style={{
           display: 'none', flexShrink: 0,
-          padding: '10px 12px',
+          padding: '12px 14px',
           borderBottom: `1px solid ${C.border}`,
           background: C.cardBg,
           overflowX: 'auto',
+          gap: '8px',
+          alignItems: 'center',
+          WebkitOverflowScrolling: 'touch',
         }}>
-          {visibleSections.map((s) => (
-            <button key={s.key} onClick={() => setActiveSection(s.key)} type="button"
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '7px 12px', marginRight: '6px',
-                fontSize: '12.5px', fontWeight: 500, whiteSpace: 'nowrap',
-                background: activeSection === s.key ? C.accentSoft : C.softBg,
-                color: activeSection === s.key ? C.accentText : C.textSecondary,
-                border: 'none', borderRadius: '999px',
-                cursor: 'pointer', fontFamily: 'inherit',
-              }}>
-              <span>{s.icon}</span>
-              <span>{s.label}</span>
-            </button>
-          ))}
+          {visibleSections.map((s) => {
+            const isActive = activeSection === s.key;
+            return (
+              <button key={s.key} onClick={() => setActiveSection(s.key)} type="button"
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '7px',
+                  padding: '9px 16px',
+                  fontSize: '13.5px',
+                  fontWeight: isActive ? 600 : 500,
+                  whiteSpace: 'nowrap',
+                  background: isActive ? C.accent : C.softBg,
+                  color: isActive ? 'white' : C.textPrimary,
+                  border: isActive ? `1px solid ${C.accent}` : `1px solid ${C.border}`,
+                  borderRadius: '999px',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  transition: 'background 0.12s, color 0.12s',
+                  flexShrink: 0,
+                  boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                }}>
+                <span style={{ fontSize: '15px', lineHeight: 1 }}>{s.icon}</span>
+                <span>{s.label}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Content pane */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px clamp(16px, 5vw, 36px)' }}>
-          <div style={{ maxWidth: '640px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px clamp(14px, 4vw, 36px) 32px' }}>
+          <div style={{ maxWidth: '640px', margin: '0 auto' }}>
 
 
           {/* ============== ACCOUNT (CREDENTIALS) SECTION ============== */}
@@ -4359,7 +4448,10 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
         </div>
         {!loaded ? (
           <div style={{ paddingTop: '0.5rem' }}>
-            <Skeleton lines={4} />
+            {/* v25.8: Card-shaped skeleton placeholders give a confident
+                "content is loading" signal so the app feels instant. */}
+            <Skeleton height="44px" style={{ marginBottom: '14px' }} />
+            <Skeleton lines={5} />
           </div>
         ) :
           tab === 'notice' ? <NoticeTab user={user} subs={subs} items={notices} setItems={setNotices} reload={reloaders.notices} pastes={pastes} setPastes={setPastes} reloadPastes={reloaders.paste_buffer} /> :

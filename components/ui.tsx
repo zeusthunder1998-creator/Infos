@@ -254,17 +254,62 @@ export function useToast() {
 // Shimmering placeholder for loading states. Use as a generic shape OR with
 // a dedicated `lines` count to render a list-style placeholder.
 export function Skeleton({ width, height, lines, style }: { width?: string; height?: string; lines?: number; style?: any }) {
+  // v25.8: When `lines` is set, render card-shaped placeholders that mimic
+  // the real list item structure (title row + body lines + footer chips).
+  // This gives a much more confident "content is coming" signal than the
+  // older generic rectangles.
   if (lines && lines > 0) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', ...style }}>
         {Array.from({ length: lines }).map((_, i) => (
-          <div key={i} className="infos-skeleton" style={{
-            height: '64px', width: '100%',
-            borderRadius: '10px',
-            background: 'linear-gradient(90deg, var(--soft-bg) 0%, var(--border) 50%, var(--soft-bg) 100%)',
-            backgroundSize: '200% 100%',
-            animation: 'infosShimmer 1.4s ease-in-out infinite',
-          }} />
+          <div key={i} style={{
+            background: 'var(--card-bg)',
+            border: '1px solid var(--border)',
+            borderRadius: '12px',
+            padding: '16px 16px 14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px',
+          }}>
+            {/* Title row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div className="infos-skeleton-bar" style={{
+                width: `${50 + ((i * 13) % 30)}%`,
+                height: '14px',
+                borderRadius: '4px',
+                background: 'linear-gradient(90deg, var(--soft-bg) 0%, var(--border) 50%, var(--soft-bg) 100%)',
+                backgroundSize: '200% 100%',
+                animation: 'infosShimmer 1.4s ease-in-out infinite',
+              }} />
+            </div>
+            {/* Body line */}
+            <div className="infos-skeleton-bar" style={{
+              width: '92%',
+              height: '11px',
+              borderRadius: '4px',
+              background: 'linear-gradient(90deg, var(--soft-bg) 0%, var(--border) 50%, var(--soft-bg) 100%)',
+              backgroundSize: '200% 100%',
+              animation: 'infosShimmer 1.4s ease-in-out infinite',
+              animationDelay: '0.1s',
+            }} />
+            {/* Footer chips row */}
+            <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
+              <div className="infos-skeleton-bar" style={{
+                width: '60px', height: '18px', borderRadius: '5px',
+                background: 'linear-gradient(90deg, var(--soft-bg) 0%, var(--border) 50%, var(--soft-bg) 100%)',
+                backgroundSize: '200% 100%',
+                animation: 'infosShimmer 1.4s ease-in-out infinite',
+                animationDelay: '0.2s',
+              }} />
+              <div className="infos-skeleton-bar" style={{
+                width: '70px', height: '18px', borderRadius: '5px',
+                background: 'linear-gradient(90deg, var(--soft-bg) 0%, var(--border) 50%, var(--soft-bg) 100%)',
+                backgroundSize: '200% 100%',
+                animation: 'infosShimmer 1.4s ease-in-out infinite',
+                animationDelay: '0.3s',
+              }} />
+            </div>
+          </div>
         ))}
       </div>
     );
