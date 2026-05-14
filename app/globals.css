@@ -201,3 +201,44 @@ input, textarea, button, select { font-family: inherit; }
   box-shadow: none !important;
   padding-top: env(safe-area-inset-top, 0px) !important;
 }
+
+/* v25.10: Left navigation drawer responsive behavior.
+   ≥900px: drawer is permanent — always visible as a left rail.
+   <900px: drawer slides in from the left via the hamburger menu.
+*/
+.infos-drawer-backdrop { display: none; }
+.infos-drawer { transition: transform 0.22s ease; }
+.infos-hamburger { display: none !important; }
+.infos-drawer-close { display: none !important; }
+
+/* Mobile: hide drawer by default, slide in when .is-open */
+@media (max-width: 899px) {
+  .infos-drawer {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    height: 100dvh !important;
+    transform: translateX(-100%);
+    box-shadow: 0 0 24px rgba(0,0,0,0.18);
+  }
+  .infos-drawer.is-open {
+    transform: translateX(0);
+  }
+  .infos-drawer-backdrop { display: block !important; }
+  .infos-hamburger { display: inline-flex !important; }
+  .infos-drawer-close { display: inline-flex !important; }
+  /* Hide the brand logo in the header to make room — drawer has its own brand */
+  .infos-header-logo { display: none !important; }
+}
+
+/* Desktop: drawer is always visible, hide hamburger */
+@media (min-width: 900px) {
+  .infos-drawer-backdrop { display: none !important; }
+  .infos-drawer {
+    position: sticky !important;
+    top: 0 !important;
+    height: 100dvh !important;
+    transform: none !important;
+  }
+}

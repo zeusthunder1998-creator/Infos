@@ -4335,15 +4335,181 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   }, [isAdmin]);
 
   const tabs = [
-    { id: 'notice', label: 'Notice' },
-    { id: 'backend', label: 'System' },
-    { id: 'games', label: 'Games' },
-    { id: 'idpass', label: 'Id & Pass' },
-    ...(isAdmin ? [{ id: 'admins', label: 'Create Admin' }] : []),
+    { id: 'notice', label: 'Notice', icon: '📢' },
+    { id: 'backend', label: 'System', icon: '⚙️' },
+    { id: 'games', label: 'Games', icon: '🎮' },
+    { id: 'idpass', label: 'Id & Pass', icon: '🔐' },
+    ...(isAdmin ? [{ id: 'admins', label: 'Create Admin', icon: '👤' }] : []),
   ];
+  // v25.10: Left-side navigation drawer state. Permanent on wide screens,
+  // slide-in on phones via the hamburger menu.
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
-    <div style={S.shell}>
+    <div className="infos-app-shell" style={{
+      display: 'flex',
+      minHeight: '100dvh',
+      background: 'var(--shell-bg)',
+    }}>
+      {/* v25.10: Mobile drawer backdrop — appears behind drawer when open */}
+      {drawerOpen && (
+        <div onClick={() => setDrawerOpen(false)}
+          className="infos-drawer-backdrop"
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0, 0, 0, 0.4)',
+            zIndex: 998,
+          }} />
+      )}
+
+      {/* v25.10: Left navigation drawer.
+          Desktop (≥900px): permanent, 240px rail, always visible.
+          Mobile (<900px): slide-in via hamburger, position:fixed. */}
+      <aside className={`infos-drawer ${drawerOpen ? 'is-open' : ''}`} style={{
+        width: '240px',
+        flexShrink: 0,
+        background: C.cardBg,
+        borderRight: `1px solid ${C.border}`,
+        display: 'flex',
+        flexDirection: 'column',
+        zIndex: 999,
+      }}>
+        {/* Brand header */}
+        <div style={{
+          padding: '18px 18px 16px',
+          borderBottom: `1px solid ${C.border}`,
+          display: 'flex', alignItems: 'center', gap: '12px',
+        }}>
+          <Image src="/logo.png" alt="" width={36} height={36} style={{ flexShrink: 0 }} />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: '17px', fontWeight: 700, letterSpacing: '-0.02em' }}>Infos</div>
+            <div style={{ fontSize: '11.5px', color: C.textSecondary, fontWeight: 500 }}>
+              {user.username}
+            </div>
+          </div>
+          {/* Close button — visible only on mobile when drawer is open */}
+          <button onClick={() => setDrawerOpen(false)} type="button" aria-label="Close drawer"
+            className="infos-drawer-close"
+            style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              padding: '4px 8px', fontSize: '20px', color: C.textTertiary, lineHeight: 1,
+              display: 'none',
+            }}>
+            ×
+          </button>
+        </div>
+
+        {/* Primary nav — tabs */}
+        <nav style={{ padding: '12px 10px', flex: 1, overflowY: 'auto' }}>
+          <div style={{
+            fontSize: '10.5px', fontWeight: 700, color: C.textTertiary,
+            textTransform: 'uppercase', letterSpacing: '0.06em',
+            padding: '4px 10px 8px',
+          }}>
+            Tabs
+          </div>
+          {tabs.map((t) => {
+            const isActive = tab === t.id;
+            return (
+              <button key={t.id} onClick={() => { setTab(t.id as any); setDrawerOpen(false); }} type="button"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '11px',
+                  width: '100%', padding: '10px 12px', marginBottom: '2px',
+                  background: isActive ? C.accentSoft : 'transparent',
+                  color: isActive ? C.accentText : C.textPrimary,
+                  border: 'none',
+                  borderLeft: isActive ? `3px solid ${C.accent}` : '3px solid transparent',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  fontWeight: isActive ? 600 : 500,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                  transition: 'background 0.12s',
+                }}
+                onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = C.softBg; }}
+                onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}>
+                <span style={{ fontSize: '17px', lineHeight: 1, flexShrink: 0 }}>{t.icon}</span>
+                <span>{t.label}</span>
+              </button>
+            );
+          })}
+
+          {/* Secondary section */}
+          <div style={{
+            fontSize: '10.5px', fontWeight: 700, color: C.textTertiary,
+            textTransform: 'uppercase', letterSpacing: '0.06em',
+            padding: '18px 10px 8px',
+          }}>
+            More
+          </div>
+          <button onClick={() => { setSettingsOpen(true); setDrawerOpen(false); }} type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '11px',
+              width: '100%', padding: '10px 12px', marginBottom: '2px',
+              background: 'transparent', color: C.textPrimary,
+              border: 'none', borderLeft: '3px solid transparent',
+              borderRadius: '8px', fontSize: '14px', fontWeight: 500,
+              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+              transition: 'background 0.12s',
+            }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+            <span style={{ fontSize: '17px', lineHeight: 1, flexShrink: 0 }}>⚙️</span>
+            <span>Settings</span>
+          </button>
+          <button onClick={() => { setGuideOpen(true); setDrawerOpen(false); }} type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '11px',
+              width: '100%', padding: '10px 12px', marginBottom: '2px',
+              background: 'transparent', color: C.textPrimary,
+              border: 'none', borderLeft: '3px solid transparent',
+              borderRadius: '8px', fontSize: '14px', fontWeight: 500,
+              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+              transition: 'background 0.12s',
+            }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+            <span style={{ fontSize: '17px', lineHeight: 1, flexShrink: 0 }}>📖</span>
+            <span>User Guide</span>
+          </button>
+          <button onClick={() => { setAboutOpen(true); setDrawerOpen(false); }} type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '11px',
+              width: '100%', padding: '10px 12px', marginBottom: '2px',
+              background: 'transparent', color: C.textPrimary,
+              border: 'none', borderLeft: '3px solid transparent',
+              borderRadius: '8px', fontSize: '14px', fontWeight: 500,
+              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+              transition: 'background 0.12s',
+            }}
+            onMouseEnter={(e) => ((e.currentTarget as HTMLButtonElement).style.background = C.softBg)}
+            onMouseLeave={(e) => ((e.currentTarget as HTMLButtonElement).style.background = 'transparent')}>
+            <span style={{ fontSize: '17px', lineHeight: 1, flexShrink: 0 }}>ℹ️</span>
+            <span>About</span>
+          </button>
+        </nav>
+
+        {/* Sign out at the bottom */}
+        <div style={{ padding: '12px 14px 14px', borderTop: `1px solid ${C.border}` }}>
+          <button onClick={() => onSignOut()} type="button"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '11px',
+              width: '100%', padding: '9px 12px',
+              background: 'transparent', color: C.danger,
+              border: `1px solid ${C.border}`,
+              borderRadius: '8px', fontSize: '13.5px', fontWeight: 500,
+              cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+            }}>
+            <span style={{ fontSize: '15px', lineHeight: 1 }}>↩</span>
+            <span>Sign out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content area */}
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ ...S.shell, maxWidth: '880px', margin: '0 auto', width: '100%', padding: '1.25rem 1rem' }}>
       <AboutModal
         open={aboutOpen}
         onClose={() => setAboutOpen(false)}
@@ -4389,8 +4555,21 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
       {toastEl}
       <div style={S.card}>
         <div style={S.headerBar}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-            <Image src="/logo.png" alt="" width={38} height={38} style={{ flexShrink: 0 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+            {/* v25.10: Hamburger menu — opens left navigation drawer on mobile.
+                Hidden on desktop where the drawer is permanent. */}
+            <button onClick={() => setDrawerOpen(true)} type="button" aria-label="Open menu"
+              className="infos-hamburger"
+              style={{
+                background: C.softBg, border: `1px solid ${C.border}`, cursor: 'pointer',
+                padding: '7px 11px', borderRadius: '8px',
+                fontSize: '16px', color: C.textPrimary, lineHeight: 1,
+                fontFamily: 'inherit', display: 'none',
+                alignItems: 'center', justifyContent: 'center',
+              }}>
+              ☰
+            </button>
+            <Image src="/logo.png" alt="" width={38} height={38} style={{ flexShrink: 0 }} className="infos-header-logo" />
             <div style={{ minWidth: 0 }}>
               <div style={S.brand}>Infos</div>
               <div style={S.sub}>
@@ -4443,9 +4622,8 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
           <span style={{ flex: 1 }}>Search everything…</span>
           <span style={{ fontSize: '11px', color: C.textTertiary, opacity: 0.7, flexShrink: 0 }}>Notices · System · Games · Id&amp;Pass</span>
         </button>
-        <div className="infos-tabs" style={S.tabs}>
-          {tabs.map((t) => <button key={t.id} onClick={() => setTab(t.id)} className="infos-tab" style={tabStyle(tab === t.id)}>{t.label}</button>)}
-        </div>
+        {/* v25.10: Horizontal tab bar removed — left navigation drawer
+            replaces it for both mobile and desktop. */}
         {!loaded ? (
           <div style={{ paddingTop: '0.5rem' }}>
             {/* v25.8: Card-shaped skeleton placeholders give a confident
@@ -4459,6 +4637,8 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
           tab === 'games' ? <GameListTab table="game_entries" user={user} subs={subs} entries={games} setEntries={setGames} reload={reloaders.game_entries} emptyMsg="No games yet." /> :
           tab === 'idpass' ? <IdPassTab user={user} subs={subs} entries={idpass} setEntries={setIdpass} reload={reloaders.idpass_entries} /> :
           tab === 'admins' && isAdmin ? <CreateAdminPanel user={user} subs={subs} setSubs={setSubs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} reloadSubs={reloaders.sub_admins} /> : null}
+      </div>
+      </div>
       </div>
     </div>
   );

@@ -1049,3 +1049,274 @@ export async function deletePushSubscription(endpoint: string): Promise<void> {
   const { error } = await sb.from('push_subscriptions').delete().eq('endpoint', endpoint);
   if (error) console.error('[deletePushSubscription]', error);
 }
+
+// ============================================================================
+// v25.12: Tab customization — Phase 1 storage layer
+// ----------------------------------------------------------------------------
+// These functions read/write tab_config and dynamic_entries.
+//
+// Phase 1 scope: storage functions exist but are NOT yet wired into the UI.
+// The app continues using hardcoded tabs (notices, backend_entries, etc).
+// Phase 2-3 work later will swap the UI over to these.
+// ============================================================================
+
+/** Tab template type — defines what fields an entry under this tab has. */
+export type TabTemplate = 'notice' | 'entry' | 'credential';
+
+/** Tab configuration row — one per tab per workspace. */
+export type TabConfig = {
+  id: string;
+  ownerId: string;
+  label: string;
+  icon: string;
+  template: TabTemplate;
+  sortOrder: number;
+  isSystem: boolean;       // built-in defaults can't be deleted
+  createdAt: number;
+  updatedAt: number;
+  deletedAt?: number | null;
+};
+
+/** Dynamic entry row — one per entry under a custom tab. */
+export type DynamicEntry = {
+  id: string;
+  tabId: string;
+  ownerId: string;
+  template: TabTemplate;
+  data: Record<string, any>;
+  assignees: string[];
+  sortOrder: number;
+  createdAt: number;
+  updatedAt: number;
+  deletedAt?: number | null;
+};
+
+function rowToTabConfig(r: any): TabConfig {
+  return {
+    id: r.id,
+    ownerId: r.owner_id,
+    label: r.label,
+    icon: r.icon,
+    template: r.template,
+    sortOrder: r.sort_order || 0,
+    isSystem: !!r.is_system,
+    createdAt: Number(r.created_at) || 0,
+    updatedAt: Number(r.updated_at) || 0,
+    deletedAt: r.deleted_at ? Number(r.deleted_at) : null,
+  };
+}
+
+function rowToDynamicEntry(r: any): DynamicEntry {
+  return {
+    id: r.id,
+    tabId: r.tab_id,
+    ownerId: r.owner_id,
+    template: r.template,
+    data: r.data || {},
+    assignees: r.assignees || [],
+    sortOrder: r.sort_order || 0,
+    createdAt: Number(r.created_at) || 0,
+    updatedAt: Number(r.updated_at) || 0,
+    deletedAt: r.deleted_at ? Number(r.deleted_at) : null,
+  };
+}
+
+/** Load all (non-deleted) tabs for a workspace, ordered by sort_order. */
+export async function loadTabs(ownerId: string): Promise<TabConfig[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from('tab_config')
+    .select('*')
+    .eq('owner_id', ownerId)
+    .is('deleted_at', null)
+    .order('sort_order', { ascending: true });
+  if (error) {
+    console.error('[loadTabs]', error);
+    return [];
+  }
+  return (data || []).map(rowToTabConfig);
+}
+
+/** Create a new custom tab. Returns the created tab. */
+export async function createTab(args: {
+  ownerId: string;
+  label: string;
+  icon?: string;
+  template: TabTemplate;
+}): Promise<TabConfig> {
+  const sb = getSupabase();
+  const now = Date.now();
+
+  // Determine next sort_order — max + 1 among existing tabs in this workspace
+  const { data: existing } = await sb
+    .from('tab_config')
+    .select('sort_order')
+    .eq('owner_id', args.ownerId)
+    .is('deleted_at', null)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextOrder = existing ? (existing.sort_order || 0) + 1 : 0;
+
+  const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? `tab-${crypto.randomUUID()}`
+    : `tab-${now}-${Math.random().toString(36).slice(2)}`;
+
+  const { data, error } = await sb.from('tab_config').insert({
+    id,
+    owner_id: args.ownerId,
+    label: args.label.trim(),
+    icon: args.icon || '📋',
+    template: args.template,
+    sort_order: nextOrder,
+    is_system: false,
+    created_at: now,
+    updated_at: now,
+  }).select().single();
+
+  if (error) throw error;
+  return rowToTabConfig(data);
+}
+
+/** Rename an existing tab. */
+export async function renameTab(id: string, newLabel: string): Promise<void> {
+  if (!newLabel.trim()) throw new Error('Tab label cannot be empty');
+  const sb = getSupabase();
+  const { error } = await sb.from('tab_config').update({
+    label: newLabel.trim(),
+    updated_at: Date.now(),
+  }).eq('id', id);
+  if (error) throw error;
+}
+
+/** Update tab icon. */
+export async function updateTabIcon(id: string, icon: string): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from('tab_config').update({
+    icon: icon || '📋',
+    updated_at: Date.now(),
+  }).eq('id', id);
+  if (error) throw error;
+}
+
+/**
+ * Soft-delete a tab. is_system tabs (built-in defaults) cannot be deleted.
+ * Phase 4 will surface a confirmation modal warning about associated entries.
+ */
+export async function deleteTab(id: string): Promise<void> {
+  const sb = getSupabase();
+  // First check is_system
+  const { data: row, error: getErr } = await sb
+    .from('tab_config')
+    .select('is_system')
+    .eq('id', id)
+    .maybeSingle();
+  if (getErr) throw getErr;
+  if (row?.is_system) {
+    throw new Error('Cannot delete built-in tab');
+  }
+  const { error } = await sb.from('tab_config').update({
+    deleted_at: Date.now(),
+    updated_at: Date.now(),
+  }).eq('id', id);
+  if (error) throw error;
+}
+
+/**
+ * Reorder tabs by setting sort_order on each.
+ * Pass tab IDs in the order you want them to appear.
+ */
+export async function reorderTabs(ownerId: string, orderedIds: string[]): Promise<void> {
+  const sb = getSupabase();
+  const now = Date.now();
+  // Apply each update — Supabase doesn't have a true bulk-update for arbitrary values,
+  // so we do this in parallel. Each row gets its new sort_order.
+  await Promise.all(
+    orderedIds.map((id, idx) =>
+      sb.from('tab_config').update({
+        sort_order: idx,
+        updated_at: now,
+      }).eq('id', id).eq('owner_id', ownerId),
+    ),
+  );
+}
+
+/** Load entries for a specific tab. */
+export async function loadDynamicEntries(tabId: string): Promise<DynamicEntry[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb
+    .from('dynamic_entries')
+    .select('*')
+    .eq('tab_id', tabId)
+    .is('deleted_at', null)
+    .order('sort_order', { ascending: true });
+  if (error) {
+    console.error('[loadDynamicEntries]', error);
+    return [];
+  }
+  return (data || []).map(rowToDynamicEntry);
+}
+
+/** Create a new dynamic entry under a tab. */
+export async function createDynamicEntry(args: {
+  tabId: string;
+  ownerId: string;
+  template: TabTemplate;
+  data: Record<string, any>;
+  assignees: string[];
+}): Promise<DynamicEntry> {
+  const sb = getSupabase();
+  const now = Date.now();
+  const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `entry-${now}-${Math.random().toString(36).slice(2)}`;
+
+  // Next sort order
+  const { data: existing } = await sb
+    .from('dynamic_entries')
+    .select('sort_order')
+    .eq('tab_id', args.tabId)
+    .is('deleted_at', null)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const nextOrder = existing ? (existing.sort_order || 0) + 1 : 0;
+
+  const { data, error } = await sb.from('dynamic_entries').insert({
+    id,
+    tab_id: args.tabId,
+    owner_id: args.ownerId,
+    template: args.template,
+    data: args.data,
+    assignees: args.assignees,
+    sort_order: nextOrder,
+    created_at: now,
+    updated_at: now,
+  }).select().single();
+  if (error) throw error;
+  return rowToDynamicEntry(data);
+}
+
+/** Update a dynamic entry's data or assignees. */
+export async function updateDynamicEntry(
+  id: string,
+  patch: Partial<{ data: Record<string, any>; assignees: string[]; sortOrder: number }>,
+): Promise<void> {
+  const sb = getSupabase();
+  const updates: any = { updated_at: Date.now() };
+  if (patch.data !== undefined)      updates.data = patch.data;
+  if (patch.assignees !== undefined) updates.assignees = patch.assignees;
+  if (patch.sortOrder !== undefined) updates.sort_order = patch.sortOrder;
+  const { error } = await sb.from('dynamic_entries').update(updates).eq('id', id);
+  if (error) throw error;
+}
+
+/** Soft-delete a dynamic entry (sends it to trash). */
+export async function softDeleteDynamicEntry(id: string): Promise<void> {
+  const sb = getSupabase();
+  const { error } = await sb.from('dynamic_entries').update({
+    deleted_at: Date.now(),
+    updated_at: Date.now(),
+  }).eq('id', id);
+  if (error) throw error;
+}

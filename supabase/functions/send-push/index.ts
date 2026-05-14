@@ -1,62 +1,77 @@
 // Supabase Edge Function: send-push
 //
-// Triggered by a database webhook on insert/update to notices, backend_entries,
-// game_entries, idpass_entries. Reads push_subscriptions and delivers a
-// notification to each subscribed device that should receive it.
+// Triggered by Supabase Database Webhooks on INSERT events for:
+//   - notices
+//   - backend_entries
+//   - game_entries
+//   - idpass_entries
 //
-// Required environment variables (set in Supabase Dashboard → Edge Functions → Settings):
-//   VAPID_PRIVATE_KEY  — your VAPID private key (NOT the NEXT_PUBLIC_ one)
+// Sends Web Push notifications to subscribers whose user_id is in
+// record.recipients[] (for notices) or record.assignees[] (for entries).
+//
+// Handles the special "__ALL__" sentinel by expanding to every sub-admin
+// in the workspace.
+//
+// Required environment variables (Supabase Dashboard → Edge Functions → send-push → Settings):
+//   VAPID_PRIVATE_KEY  — your VAPID private key
 //   VAPID_PUBLIC_KEY   — your VAPID public key (same as NEXT_PUBLIC_VAPID_PUBLIC_KEY)
-//   VAPID_SUBJECT      — a mailto: URL or your domain (e.g. mailto:zeus@example.com)
+//   VAPID_SUBJECT      — a mailto: URL (e.g. mailto:zeusthunder1998@gmail.com)
 //
-// To deploy:
-//   supabase functions deploy send-push --project-ref <your-project-ref>
+// SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are automatically injected.
 //
-// To trigger via DB webhook:
-//   Supabase Dashboard → Database → Webhooks → New webhook
-//   - Table: notices (and create one each for backend_entries, game_entries, idpass_entries)
-//   - Events: Insert, Update
-//   - Type: HTTP Request → Supabase Edge Functions
-//   - Function: send-push
+// Deploy:
+//   supabase functions deploy send-push --project-ref mljqvpjmcrjpmbtztctm
 //
-// The webhook payload Supabase sends looks like:
-//   { type: 'INSERT', table: 'notices', record: {...}, schema: 'public' }
-//
-// We use this to determine the right notification text + recipients.
+// The webhook payload from Supabase looks like:
+//   { type: 'INSERT', table: 'notices', record: {...}, schema: 'public', old_record: null }
 
 // @ts-ignore — Deno runtime
 import webpush from "npm:web-push@3.6.7";
 
-// CORS headers for the function (only POST is real, others are for OPTIONS)
+// CORS headers — only POST is real, OPTIONS is for browser preflight (rarely needed
+// here since webhooks call server-to-server, but harmless)
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// @ts-ignore
+// Constant used by the frontend to indicate "assign to all sub-admins"
+const ALL_SENTINEL = "__ALL__";
+const MAX_FAILURES = 5;
+
+// @ts-ignore — Deno
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
+  if (req.method !== "POST") {
+    return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+  }
 
   try {
-    // @ts-ignore
+    // @ts-ignore — Deno
     const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY");
     // @ts-ignore
     const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY");
     // @ts-ignore
-    const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") || "mailto:admin@example.com";
+    const VAPID_SUBJECT = Deno.env.get("VAPID_SUBJECT") || "mailto:zeusthunder1998@gmail.com";
     // @ts-ignore
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     // @ts-ignore
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
     if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
-      return new Response("VAPID keys not configured", { status: 500, headers: corsHeaders });
+      console.error("[send-push] VAPID keys not configured");
+      return new Response(JSON.stringify({ error: "VAPID keys not configured" }), {
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-      return new Response("Supabase env not configured", { status: 500, headers: corsHeaders });
+      console.error("[send-push] Supabase env not configured");
+      return new Response(JSON.stringify({ error: "Supabase env not configured" }), {
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
@@ -67,67 +82,84 @@ Deno.serve(async (req: Request) => {
     const record: any = payload.record || {};
     const oldRecord: any = payload.old_record || null;
 
-    // Skip if this is a soft-delete (deleted_at went from null to non-null)
-    // We don't want to notify on deletion.
-    if (record.deleted_at && !oldRecord?.deleted_at) {
-      return new Response(JSON.stringify({ skipped: "soft delete" }), {
+    // Skip non-INSERTs (we only notify on creation, not edits)
+    if (eventType !== "INSERT") {
+      return new Response(JSON.stringify({ skipped: "non-insert event", eventType }), {
         status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
-    // Skip if soft-deleted item is being updated
+
+    // Skip if soft-deleted (defensive — INSERT of a deleted item is weird, but handle it)
     if (record.deleted_at) {
       return new Response(JSON.stringify({ skipped: "deleted item" }), {
         status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Determine notification content based on table
+    // Determine notification content + target field per table
     let title = "Infos";
     let body = "Something new in your workspace.";
     let url = "/";
+    let targetIds: string[] = [];
     const ownerId: string = record.owner_id || "zeus";
 
-    // Decide who should get this notification.
-    // - For notices: use record.recipients[] (sub-admin IDs) OR all sub-admins in this workspace
-    // - For entries: use record.assignees[] (sub-admin IDs)
-    // - Admins (Zeus, co-admin) of the workspace also get notified
-    let recipientUserIds: string[] = [];
-
     if (table === "notices") {
-      title = record.title ? `New notice: ${record.title}` : "New notice";
-      body = (record.body || "").slice(0, 100);
+      title = record.title ? `📢 ${record.title}` : "📢 New notice";
+      body = (record.body || "A new notice was posted for you.").slice(0, 140);
       url = "/?tab=notice";
-      recipientUserIds = Array.isArray(record.recipients) ? record.recipients : [];
+      targetIds = Array.isArray(record.recipients) ? record.recipients : [];
     } else if (table === "backend_entries") {
-      title = "New backend entry";
-      body = record.game_name || "Backend entry added";
+      title = "⚙️ New System entry";
+      body = record.game_name || "A new system entry was assigned to you.";
       url = "/?tab=backend";
-      recipientUserIds = Array.isArray(record.assignees) ? record.assignees : [];
+      targetIds = Array.isArray(record.assignees) ? record.assignees : [];
     } else if (table === "game_entries") {
-      title = "New game entry";
-      body = record.game_name || "Game entry added";
+      title = "🎮 New Game entry";
+      body = record.game_name || "A new game entry was assigned to you.";
       url = "/?tab=games";
-      recipientUserIds = Array.isArray(record.assignees) ? record.assignees : [];
+      targetIds = Array.isArray(record.assignees) ? record.assignees : [];
     } else if (table === "idpass_entries") {
-      title = "New credential added";
-      body = record.game || "Id & Pass entry";
+      title = "🔐 New Id & Pass entry";
+      body = record.game || "A new credential was assigned to you.";
       url = "/?tab=idpass";
-      recipientUserIds = Array.isArray(record.assignees) ? record.assignees : [];
+      targetIds = Array.isArray(record.assignees) ? record.assignees : [];
     } else {
-      return new Response(JSON.stringify({ skipped: "unknown table" }), {
+      return new Response(JSON.stringify({ skipped: "unknown table", table }), {
         status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Build the list of user IDs that should receive this push.
-    // Always include the workspace admin(s) — they want to see their own activity
-    // confirmed, and on co-admin workspaces, the co-admin's id IS the owner_id.
-    const recipientSet = new Set<string>(recipientUserIds);
-    recipientSet.add(ownerId === "zeus" ? "zeus" : ownerId);
+    // Expand ALL_SENTINEL → every sub-admin id in this workspace
+    if (targetIds.includes(ALL_SENTINEL)) {
+      const subsResp = await fetch(
+        `${SUPABASE_URL}/rest/v1/sub_admins?owner_id=eq.${encodeURIComponent(ownerId)}&select=id`,
+        {
+          headers: {
+            apikey: SUPABASE_SERVICE_ROLE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+        },
+      );
+      if (subsResp.ok) {
+        const rows = await subsResp.json();
+        targetIds = (rows || []).map((r: any) => r.id);
+      } else {
+        // Fallback: just drop the sentinel and keep any explicit IDs
+        targetIds = targetIds.filter((t) => t !== ALL_SENTINEL);
+      }
+    }
 
-    // Fetch all push subscriptions for these recipients in this workspace
+    if (targetIds.length === 0) {
+      return new Response(JSON.stringify({ sent: 0, reason: "no targets" }), {
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Fetch all push subscriptions for those users in this workspace.
+    // Note: column is `p256dh` (not `p256dh_key`) — matches the storage.ts schema.
+    const inList = targetIds.map((t) => `"${t}"`).join(",");
     const subsResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/push_subscriptions?owner_id=eq.${encodeURIComponent(ownerId)}&select=id,user_id,endpoint,p256dh_key,auth_key`,
+      `${SUPABASE_URL}/rest/v1/push_subscriptions?owner_id=eq.${encodeURIComponent(ownerId)}&user_id=in.(${inList})&select=id,user_id,endpoint,p256dh,auth`,
       {
         headers: {
           apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -137,30 +169,51 @@ Deno.serve(async (req: Request) => {
     );
     if (!subsResp.ok) {
       const txt = await subsResp.text();
-      return new Response(`Failed to fetch subscriptions: ${txt}`, { status: 500, headers: corsHeaders });
+      console.error("[send-push] subs query failed", txt);
+      return new Response(JSON.stringify({ error: "subs query failed", details: txt }), {
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
-    const allSubs: any[] = await subsResp.json();
-    const targetSubs = allSubs.filter((s) => recipientSet.has(s.user_id));
 
-    const pushPayload = JSON.stringify({
-      title, body, url, tag: `infos-${table}-${record.id || Date.now()}`,
-    });
+    const targetSubs: any[] = await subsResp.json();
+    if (targetSubs.length === 0) {
+      return new Response(JSON.stringify({ sent: 0, reason: "no subscriptions" }), {
+        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    // Send to each subscription. If a sub returns 404/410, it's expired —
-    // delete it from the database to avoid retrying.
+    const tag = `infos-${table}-${record.id || Date.now()}`;
+    const pushPayload = JSON.stringify({ title, body, url, tag });
+
+    // Send to each subscription. On 404/410, the subscription is dead — delete it.
+    // On other errors, increment failed_count and delete once it hits MAX_FAILURES.
     const results = await Promise.allSettled(
       targetSubs.map(async (s) => {
         const subscription = {
           endpoint: s.endpoint,
-          keys: { p256dh: s.p256dh_key, auth: s.auth_key },
+          keys: { p256dh: s.p256dh, auth: s.auth },
         };
         try {
-          await webpush.sendNotification(subscription, pushPayload);
+          await webpush.sendNotification(subscription, pushPayload, { TTL: 60 * 60 * 24 });
+          // Reset failure counter on success
+          await fetch(
+            `${SUPABASE_URL}/rest/v1/push_subscriptions?id=eq.${encodeURIComponent(s.id)}`,
+            {
+              method: "PATCH",
+              headers: {
+                apikey: SUPABASE_SERVICE_ROLE_KEY,
+                Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                "Content-Type": "application/json",
+                Prefer: "return=minimal",
+              },
+              body: JSON.stringify({ failed_count: 0, last_seen_at: Date.now() }),
+            },
+          ).catch(() => {});
           return { id: s.id, status: "sent" };
         } catch (err: any) {
           const statusCode = err?.statusCode;
           if (statusCode === 404 || statusCode === 410) {
-            // Subscription gone — clean up
+            // Subscription gone — delete
             await fetch(
               `${SUPABASE_URL}/rest/v1/push_subscriptions?id=eq.${encodeURIComponent(s.id)}`,
               {
@@ -170,24 +223,77 @@ Deno.serve(async (req: Request) => {
                   Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
                 },
               },
-            );
+            ).catch(() => {});
             return { id: s.id, status: "expired-and-deleted" };
           }
-          return { id: s.id, status: "error", error: err?.message || String(err) };
+          // Other error → bump failed_count; delete if >= MAX_FAILURES
+          try {
+            const cur = await fetch(
+              `${SUPABASE_URL}/rest/v1/push_subscriptions?id=eq.${encodeURIComponent(s.id)}&select=failed_count`,
+              {
+                headers: {
+                  apikey: SUPABASE_SERVICE_ROLE_KEY,
+                  Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                },
+              },
+            );
+            const rows = cur.ok ? await cur.json() : [];
+            const newCount = (rows?.[0]?.failed_count || 0) + 1;
+            if (newCount >= MAX_FAILURES) {
+              await fetch(
+                `${SUPABASE_URL}/rest/v1/push_subscriptions?id=eq.${encodeURIComponent(s.id)}`,
+                {
+                  method: "DELETE",
+                  headers: {
+                    apikey: SUPABASE_SERVICE_ROLE_KEY,
+                    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                  },
+                },
+              );
+              return { id: s.id, status: "deleted-after-max-failures" };
+            } else {
+              await fetch(
+                `${SUPABASE_URL}/rest/v1/push_subscriptions?id=eq.${encodeURIComponent(s.id)}`,
+                {
+                  method: "PATCH",
+                  headers: {
+                    apikey: SUPABASE_SERVICE_ROLE_KEY,
+                    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                    "Content-Type": "application/json",
+                    Prefer: "return=minimal",
+                  },
+                  body: JSON.stringify({ failed_count: newCount }),
+                },
+              );
+            }
+          } catch (_) { /* swallow */ }
+          return { id: s.id, status: "error", code: statusCode, error: err?.message || String(err) };
         }
       }),
     );
 
+    const delivered = results.filter((r) =>
+      r.status === "fulfilled" && (r.value as any).status === "sent"
+    ).length;
+    const expired = results.filter((r) =>
+      r.status === "fulfilled" && (r.value as any).status === "expired-and-deleted"
+    ).length;
+
     return new Response(
       JSON.stringify({
-        table, eventType,
-        delivered: results.filter((r) => r.status === "fulfilled" && (r.value as any).status === "sent").length,
+        table,
+        delivered,
+        expired,
         total: targetSubs.length,
-        details: results.map((r) => r.status === "fulfilled" ? r.value : { error: r.reason }),
+        results: results.map((r) => r.status === "fulfilled" ? r.value : { error: String(r.reason) }),
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err: any) {
-    return new Response(`Error: ${err?.message || String(err)}`, { status: 500, headers: corsHeaders });
+    console.error("[send-push] unexpected error", err);
+    return new Response(
+      JSON.stringify({ error: err?.message || String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    );
   }
 });
