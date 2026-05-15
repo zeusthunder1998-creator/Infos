@@ -75,10 +75,11 @@ declare
   workspace record;
 begin
   -- Get every workspace: zeus + every co-admin
+  -- (sub_admins uses hard delete, not soft delete — no deleted_at column)
   for workspace in
     (select 'zeus' as owner_id
      union
-     select id as owner_id from sub_admins where role = 'co' and deleted_at is null)
+     select id as owner_id from sub_admins where role = 'co')
   loop
     -- Notice tab (template = 'notice')
     insert into tab_config (id, owner_id, label, icon, template, sort_order, is_system, created_at, updated_at)
@@ -125,9 +126,19 @@ create policy "Public all" on tab_config       for all using (true) with check (
 drop policy if exists "Public all" on dynamic_entries;
 create policy "Public all" on dynamic_entries  for all using (true) with check (true);
 
--- 5. Enable Realtime so the app can subscribe to changes
-alter publication supabase_realtime add table tab_config;
-alter publication supabase_realtime add table dynamic_entries;
+-- 5. Enable Realtime so the app can subscribe to changes.
+-- Wrapped in exception handler since publication adds fail if table is already a member.
+do $$
+begin
+  begin
+    alter publication supabase_realtime add table tab_config;
+  exception when duplicate_object then null;
+  end;
+  begin
+    alter publication supabase_realtime add table dynamic_entries;
+  exception when duplicate_object then null;
+  end;
+end $$;
 
 -- ============================================================================
 -- Verification queries (optional — run these to verify the migration worked)

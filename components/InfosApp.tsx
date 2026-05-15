@@ -22,12 +22,20 @@ import {
   savePushSubscription, deletePushSubscription,
   loadTrashedBackend, loadTrashedGames, loadTrashedIdPass, loadTrashedNotices,
   restoreEntry, purgeEntry, emptyTrash, purgeOldTrash, TRASH_TTL_MS,
+  // v25.18: Phase 3 — dynamic tabs storage + types
+  loadTabs, loadDynamicEntries, createDynamicEntry, updateDynamicEntry, softDeleteDynamicEntry,
+  // v25.19: Phase 4 — tab CRUD
+  createTab, renameTab, updateTabIcon, deleteTab, reorderTabs,
+  type TabConfig, type DynamicEntry,
 } from '@/lib/storage';
 import { C, S, tabStyle } from './styles';
 import { Timestamp, useConfirm, useTheme, SearchBar, Theme, timeAgo, fullDateTime, useToast, Skeleton, EmptyState } from './ui';
 import { BulkAssignModal, BulkEntry } from './BulkAssign';
 import { EditGameModal, EditIdPassModal, EditNoticeModal, EditSubAdminModal } from './EditModals';
 import { AboutModal } from './AboutModal';
+// v25.18: Phase 3 — dynamic UI + templates
+import { DynamicForm, DynamicCard } from './DynamicComponents';
+import { TEMPLATE_DEFS, entrySearchText, validateEntry, listTemplates } from '@/lib/templates';
 
 // v22.2: Device fingerprint helpers.
 // Each browser gets a stable random ID stored in localStorage. This is NOT
@@ -2972,6 +2980,263 @@ function CopyPasteSection({ user, pastes, setPastes, reload }: any) {
 }
 
 
+
+// ============================================================================
+// v25.18: GenericTabRenderer — Phase 3 of Tab Customization
+// ----------------------------------------------------------------------------
+// Template-agnostic tab component. Reads its config from `tab_config` and
+// entries from `dynamic_entries`. Renders the appropriate form, card list,
+// search, filter, and edit modal based on the tab's template.
+//
+// Activated only when feature flag is set:
+//   localStorage.setItem('infos:use_dynamic_tabs', '1'); location.reload();
+//
+// When the flag is OFF, the old hardcoded tabs (NoticeTab, GameListTab,
+// IdPassTab) are used — so app behavior is unchanged by default.
+// ============================================================================
+
+type GenericTabRendererProps = {
+  tabConfig: TabConfig;
+  user: any;
+  subs: any[];
+  entries: DynamicEntry[];
+  reload: () => Promise<void> | void;
+};
+
+function GenericTabRenderer({ tabConfig, user, subs, entries, reload }: GenericTabRendererProps) {
+  const isAdmin = isAdminRole(user.role);
+  const template = tabConfig.template;
+  const def = TEMPLATE_DEFS[template] || TEMPLATE_DEFS.entry;
+  const [confirmEl, confirm] = useConfirm();
+  const [q, setQ] = useState('');
+  const [editing, setEditing] = useState<DynamicEntry | null>(null);
+  // Admin-only filter by sub-admin (same UX as legacy tabs)
+  const [filterSub, setFilterSub] = useState<'all' | string>('all');
+  const subOnlyForFilter = useMemo(() => subs.filter((s: any) => s.role !== 'co'), [subs]);
+
+  // Visibility filter for sub-admin role
+  const visible = useMemo(() => {
+    // Apply role-based visibility first
+    let base = isAdmin
+      ? entries
+      : entries.filter((e) => {
+          // Sub-admin only sees entries assigned to them or to ALL
+          if (e.assignees.includes(ALL_SENTINEL)) return true;
+          return e.assignees.includes(user.id);
+        });
+    // Admin's optional filter by sub-admin
+    if (isAdmin && filterSub !== 'all') {
+      base = base.filter((e) => {
+        if (e.assignees.includes(ALL_SENTINEL)) return true;
+        return e.assignees.includes(filterSub);
+      });
+    }
+    // Search filter
+    const search = q.trim().toLowerCase();
+    if (!search) return base;
+    return base.filter((e) => entrySearchText(e).includes(search));
+  }, [entries, isAdmin, user.id, q, filterSub]);
+
+  // Handler: create new entry
+  const handleCreate = async (formData: Record<string, any>, assignees: string[]) => {
+    const errors = validateEntry(template, formData);
+    if (errors.length > 0) throw new Error(errors[0]);
+    await createDynamicEntry({
+      tabId: tabConfig.id,
+      ownerId: workspaceIdForUser(user),
+      template,
+      data: formData,
+      assignees,
+    });
+    await reload();
+  };
+
+  // Handler: save edits
+  const handleSaveEdit = async (id: string, newData: Record<string, any>, newAssignees: string[]) => {
+    const errors = validateEntry(template, newData);
+    if (errors.length > 0) throw new Error(errors[0]);
+    await updateDynamicEntry(id, { data: newData, assignees: newAssignees });
+    await reload();
+  };
+
+  // Handler: delete entry
+  const handleDelete = async (entry: DynamicEntry) => {
+    const ok = await confirm({
+      title: 'Delete entry?',
+      message: 'This will move the entry to trash. You can restore it later.',
+      danger: true,
+    });
+    if (!ok) return;
+    await softDeleteDynamicEntry(entry.id);
+    await reload();
+  };
+
+  // For sub-admins viewing notice-template tabs, show a friendlier empty msg
+  const emptyTitle =
+    template === 'notice'
+      ? (isAdmin ? `No ${def.displayName.toLowerCase()}s posted yet` : `No ${def.displayName.toLowerCase()}s for you yet`)
+      : (isAdmin ? `No ${def.displayName.toLowerCase()} entries yet` : `No ${def.displayName.toLowerCase()} entries assigned to you yet`);
+
+  const emptyHint =
+    isAdmin
+      ? `Use the form above to create your first ${def.displayName.toLowerCase()}.`
+      : `When your admin adds ${def.displayName.toLowerCase()}s for you, they'll appear here.`;
+
+  // Form-with-assignees wrapper — combines DynamicForm with the existing
+  // AssigneePicker (so admins can pick recipients/assignees per entry)
+  const FormSection = isAdmin ? (
+    <FormWithAssignees
+      template={template}
+      def={def}
+      subs={subs}
+      onSubmit={handleCreate}
+    />
+  ) : null;
+
+  return (
+    <div>
+      {confirmEl}
+      {FormSection}
+      {entries.length > 0 && (
+        <SearchBar value={q} onChange={setQ} placeholder={`Search ${def.displayName.toLowerCase()}s…`} />
+      )}
+      {/* Admin filter pills */}
+      {isAdmin && subOnlyForFilter.length > 0 && entries.length > 0 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '1rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: C.textTertiary, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '2px' }}>Filter:</span>
+          <button onClick={() => setFilterSub('all')} className="infos-pill"
+            style={{ padding: '5px 12px', fontSize: '12.5px', border: filterSub === 'all' ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: filterSub === 'all' ? C.accent : C.cardBg, color: filterSub === 'all' ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: filterSub === 'all' ? 600 : 500 }}>All</button>
+          {subOnlyForFilter.map((s: any) => {
+            const on = filterSub === s.id;
+            return (
+              <button key={s.id} onClick={() => setFilterSub(s.id)} className="infos-pill"
+                style={{ padding: '5px 12px', fontSize: '12.5px', border: on ? `1px solid ${C.accent}` : `1px solid ${C.borderStrong}`, borderRadius: '16px', background: on ? C.accent : C.cardBg, color: on ? 'white' : C.textPrimary, cursor: 'pointer', fontWeight: on ? 600 : 500 }}>{s.username}</button>
+            );
+          })}
+        </div>
+      )}
+      {/* Card list */}
+      {visible.length === 0 ? (
+        q.trim() || filterSub !== 'all'
+          ? <EmptyState icon="🔍" title="No matches found" hint="Try a different search term or filter." />
+          : <EmptyState icon={tabConfig.icon} title={emptyTitle} hint={emptyHint} />
+      ) : (
+        <div>
+          {visible.map((entry) => (
+            <DynamicCard
+              key={entry.id}
+              entry={entry}
+              assigneesSlot={
+                isAdmin && (entry.assignees?.length > 0) ? (
+                  <div style={{ marginTop: '8px', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                    {entry.assignees.includes(ALL_SENTINEL) ? (
+                      <span style={S.allPill}>ALL</span>
+                    ) : (
+                      entry.assignees.map((aId) => {
+                        const sub = subs.find((s: any) => s.id === aId);
+                        if (!sub) return null;
+                        return <span key={aId} style={S.assigneePill}>{sub.username}</span>;
+                      })
+                    )}
+                  </div>
+                ) : null
+              }
+              timestampSlot={
+                <div style={{ marginTop: '6px' }}>
+                  <Timestamp createdAt={entry.createdAt} updatedAt={entry.updatedAt} />
+                </div>
+              }
+              actions={
+                isAdmin ? (
+                  <>
+                    <button onClick={() => setEditing(entry)} type="button"
+                      style={{ ...S.btn, padding: '5px 10px', fontSize: '12px' }}>
+                      Edit
+                    </button>
+                    <button onClick={() => handleDelete(entry)} type="button"
+                      style={{ ...S.btnDanger }}>
+                      Delete
+                    </button>
+                  </>
+                ) : null
+              }
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Edit modal */}
+      {editing && (
+        <DynamicEditModal
+          entry={editing}
+          template={template}
+          subs={subs}
+          onSave={async (newData: Record<string, any>, newAssignees: string[]) => {
+            await handleSaveEdit(editing.id, newData, newAssignees);
+            setEditing(null);
+          }}
+          onCancel={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Wraps DynamicForm with the assignee picker so admin can target users.
+function FormWithAssignees({ template, def, subs, onSubmit }: any) {
+  const [assignees, setAssignees] = useState<string[]>([ALL_SENTINEL]);
+  return (
+    <DynamicForm
+      template={template}
+      assigneePickerSlot={
+        <AssigneePicker subs={subs} selected={assignees} onChange={setAssignees} />
+      }
+      onSubmit={async (data: any) => {
+        await onSubmit(data, assignees);
+        setAssignees([ALL_SENTINEL]);
+      }}
+      submitLabel={`Add ${def.displayName}`}
+    />
+  );
+}
+
+// Edit modal for a dynamic entry — uses DynamicForm with initial values
+function DynamicEditModal({ entry, template, subs, onSave, onCancel }: any) {
+  const [assignees, setAssignees] = useState<string[]>(entry.assignees || []);
+  return (
+    <div className="infos-modal-backdrop" style={{
+      position: 'fixed', inset: 0, background: 'var(--modal-backdrop)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 1100, padding: '20px',
+    }} onClick={onCancel}>
+      <div className="infos-modal" style={{
+        background: C.cardBg, borderRadius: '14px', padding: '20px',
+        maxWidth: '560px', width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        boxShadow: 'var(--shadow-pop)',
+      }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+          <div style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.01em' }}>Edit entry</div>
+          <button onClick={onCancel} type="button" aria-label="Close"
+            style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: '20px', color: C.textTertiary, padding: '4px 8px', lineHeight: 1 }}>
+            ×
+          </button>
+        </div>
+        <DynamicForm
+          template={template}
+          initialData={entry.data}
+          assigneePickerSlot={
+            <AssigneePicker subs={subs} selected={assignees} onChange={setAssignees} />
+          }
+          onSubmit={async (data: any) => {
+            await onSave(data, assignees);
+          }}
+          submitLabel="Save"
+        />
+      </div>
+    </div>
+  );
+}
+
 function NoticeTabInner({ user, subs, items, setItems, reload, pastes, setPastes, reloadPastes }: any) {
   const isAdmin = isAdminRole(user.role);
   const isSubOnly = !isAdmin; // 'sub' role only — admins (zeus, co) don't see Copy & Paste sub-tab
@@ -3689,8 +3954,13 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
 
   // v23.0: Sidebar nav structure. Sections shown depend on user role.
   // Mobile: rendered as horizontal scrolling pills above content.
+  // v25.19: Added "Edit Tabs" section for tab customization (admin only,
+  // visible only when use_dynamic_tabs flag is on).
+  const showEditTabs = isAdmin && typeof window !== 'undefined' &&
+    (() => { try { return localStorage.getItem('infos:use_dynamic_tabs') === '1'; } catch { return false; } })();
   const sections: Array<{ key: string; label: string; icon: string; show: boolean }> = [
     { key: 'account',     label: 'Account',          icon: '🔑', show: isAdmin },
+    { key: 'tabs',        label: 'Edit Tabs',        icon: '🗂️', show: showEditTabs },
     { key: 'appearance',  label: 'Appearance',       icon: '🎨', show: true },
     { key: 'data',        label: 'Backup & Data',    icon: '💾', show: isAdmin },
     { key: 'trash',       label: 'Trash',            icon: '🗑',  show: isAdmin },
@@ -3870,6 +4140,14 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
             </>
           )}
 
+          {/* ============== EDIT TABS SECTION ============== */}
+          {activeSection === 'tabs' && isAdminRole(user.role) && (
+            <>
+              <SectionHeading title="Edit Tabs" sub="Rename, reorder, add, or delete tabs in your workspace. Changes affect all sub-admins immediately." />
+              <EditTabsPanel user={user} />
+            </>
+          )}
+
           {/* ============== APPEARANCE SECTION ============== */}
           {activeSection === 'appearance' && (
             <>
@@ -3968,6 +4246,347 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
 
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// v25.19: EditTabsPanel — Phase 4 of Tab Customization
+// ----------------------------------------------------------------------------
+// Settings section that lets an admin rename / re-icon / delete / add / reorder
+// tabs in their workspace. Visible only when the use_dynamic_tabs flag is on.
+//
+// Uses the storage layer from Phase 1: loadTabs, createTab, renameTab,
+// updateTabIcon, deleteTab, reorderTabs.
+// ============================================================================
+function EditTabsPanel({ user }: { user: any }) {
+  const [tabs, setTabs] = useState<TabConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [editIcon, setEditIcon] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [newLabel, setNewLabel] = useState('');
+  const [newIcon, setNewIcon] = useState('📋');
+  const [newTemplate, setNewTemplate] = useState<'notice' | 'entry' | 'credential'>('entry');
+  const [confirmEl, confirm] = useConfirm();
+
+  const workspaceId = workspaceIdForUser(user);
+
+  // Load on mount
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await loadTabs(workspaceId);
+      setTabs(list);
+    } catch (e: any) {
+      setErr(friendlyError(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // --- Handlers ---
+
+  const handleStartEdit = (t: TabConfig) => {
+    setEditingId(t.id);
+    setEditLabel(t.label);
+    setEditIcon(t.icon);
+    setErr('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditLabel('');
+    setEditIcon('');
+  };
+
+  const handleSaveEdit = async (id: string) => {
+    if (!editLabel.trim()) { setErr('Tab name cannot be empty'); return; }
+    setBusyId(id); setErr('');
+    try {
+      const current = tabs.find((t) => t.id === id);
+      if (!current) return;
+      if (current.label !== editLabel.trim()) {
+        await renameTab(id, editLabel.trim());
+      }
+      if (current.icon !== editIcon) {
+        await updateTabIcon(id, editIcon || '📋');
+      }
+      await refresh();
+      handleCancelEdit();
+    } catch (e: any) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (t: TabConfig) => {
+    if (t.isSystem) {
+      setErr('Built-in tabs cannot be deleted. You can rename them instead.');
+      return;
+    }
+    const ok = await confirm({
+      title: `Delete "${t.label}"?`,
+      message: 'This will hide the tab and its entries. The data is soft-deleted and can be recovered for 30 days. Continue?',
+      danger: true,
+      confirmLabel: 'Delete tab',
+    });
+    if (!ok) return;
+    setBusyId(t.id); setErr('');
+    try {
+      await deleteTab(t.id);
+      await refresh();
+    } catch (e: any) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleMoveUp = async (idx: number) => {
+    if (idx === 0) return;
+    setBusyId(tabs[idx].id); setErr('');
+    try {
+      const newOrder = [...tabs];
+      [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
+      await reorderTabs(workspaceId, newOrder.map((t) => t.id));
+      setTabs(newOrder);
+    } catch (e: any) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleMoveDown = async (idx: number) => {
+    if (idx === tabs.length - 1) return;
+    setBusyId(tabs[idx].id); setErr('');
+    try {
+      const newOrder = [...tabs];
+      [newOrder[idx + 1], newOrder[idx]] = [newOrder[idx], newOrder[idx + 1]];
+      await reorderTabs(workspaceId, newOrder.map((t) => t.id));
+      setTabs(newOrder);
+    } catch (e: any) {
+      setErr(friendlyError(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleAdd = async () => {
+    if (!newLabel.trim()) { setErr('Tab name cannot be empty'); return; }
+    setErr('');
+    try {
+      await createTab({
+        ownerId: workspaceId,
+        label: newLabel.trim(),
+        icon: newIcon || '📋',
+        template: newTemplate,
+      });
+      setNewLabel('');
+      setNewIcon('📋');
+      setNewTemplate('entry');
+      setAdding(false);
+      await refresh();
+    } catch (e: any) {
+      setErr(friendlyError(e));
+    }
+  };
+
+  if (loading) {
+    return <Skeleton lines={3} />;
+  }
+
+  return (
+    <div>
+      {confirmEl}
+      {err && (
+        <div style={{ ...S.formError, marginBottom: '12px' }}>
+          <span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span>
+          <span>{err}</span>
+        </div>
+      )}
+
+      {/* Tab list */}
+      <div style={{ marginBottom: '16px' }}>
+        {tabs.map((t, idx) => {
+          const isEditing = editingId === t.id;
+          const isBusy = busyId === t.id;
+          return (
+            <div key={t.id} style={{
+              ...S.softCard,
+              marginBottom: '10px',
+              padding: '12px 14px',
+              opacity: isBusy ? 0.6 : 1,
+              transition: 'opacity 0.15s',
+            }}>
+              {isEditing ? (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  <input
+                    type="text" value={editIcon} onChange={(e) => setEditIcon(e.target.value)}
+                    placeholder="📋" maxLength={4}
+                    className="infos-input"
+                    style={{ ...S.input, width: '60px', textAlign: 'center', fontSize: '18px' }}
+                  />
+                  <input
+                    type="text" value={editLabel} onChange={(e) => setEditLabel(e.target.value)}
+                    placeholder="Tab name" maxLength={50}
+                    className="infos-input"
+                    style={{ ...S.input, flex: 1, minWidth: '160px' }}
+                  />
+                  <button onClick={() => handleSaveEdit(t.id)} disabled={isBusy} type="button"
+                    style={{ ...S.btnPrimary, padding: '8px 14px', fontSize: '13px' }}>
+                    Save
+                  </button>
+                  <button onClick={handleCancelEdit} disabled={isBusy} type="button"
+                    style={{ ...S.btn, padding: '8px 14px', fontSize: '13px' }}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '22px', lineHeight: 1, flexShrink: 0 }}>{t.icon}</span>
+                  <div style={{ flex: 1, minWidth: '120px' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 600, color: C.textPrimary }}>
+                      {t.label}
+                      {t.isSystem && (
+                        <span style={{
+                          fontSize: '10.5px', fontWeight: 500, color: C.textTertiary,
+                          background: C.softBg, padding: '2px 7px', borderRadius: '5px',
+                          marginLeft: '8px', textTransform: 'uppercase', letterSpacing: '0.04em',
+                        }}>
+                          Built-in
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: '11.5px', color: C.textTertiary, marginTop: '2px' }}>
+                      Template: {TEMPLATE_DEFS[t.template]?.displayName || t.template}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px', flexShrink: 0, alignItems: 'center' }}>
+                    <button onClick={() => handleMoveUp(idx)} disabled={isBusy || idx === 0} type="button"
+                      title="Move up" aria-label="Move up"
+                      style={{ ...S.btn, padding: '6px 10px', fontSize: '12px', opacity: idx === 0 ? 0.4 : 1 }}>
+                      ↑
+                    </button>
+                    <button onClick={() => handleMoveDown(idx)} disabled={isBusy || idx === tabs.length - 1} type="button"
+                      title="Move down" aria-label="Move down"
+                      style={{ ...S.btn, padding: '6px 10px', fontSize: '12px', opacity: idx === tabs.length - 1 ? 0.4 : 1 }}>
+                      ↓
+                    </button>
+                    <button onClick={() => handleStartEdit(t)} disabled={isBusy} type="button"
+                      style={{ ...S.btn, padding: '6px 12px', fontSize: '12.5px' }}>
+                      Edit
+                    </button>
+                    {!t.isSystem && (
+                      <button onClick={() => handleDelete(t)} disabled={isBusy} type="button"
+                        style={{ ...S.btnDanger, padding: '6px 12px', fontSize: '12.5px' }}>
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add new tab form */}
+      {adding ? (
+        <div style={{
+          ...S.softCard,
+          padding: '14px 16px',
+          marginBottom: '12px',
+          border: `1px dashed ${C.accent}`,
+        }}>
+          <div style={{ fontSize: '13.5px', fontWeight: 600, marginBottom: '12px', letterSpacing: '-0.01em' }}>
+            New tab
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', flexWrap: 'wrap', marginBottom: '12px' }}>
+            <input
+              type="text" value={newIcon} onChange={(e) => setNewIcon(e.target.value)}
+              placeholder="📋" maxLength={4}
+              className="infos-input"
+              style={{ ...S.input, width: '60px', textAlign: 'center', fontSize: '18px' }}
+            />
+            <input
+              type="text" value={newLabel} onChange={(e) => setNewLabel(e.target.value)}
+              placeholder="Tab name (e.g. Vendors)" maxLength={50}
+              className="infos-input"
+              style={{ ...S.input, flex: 1, minWidth: '160px' }}
+            />
+          </div>
+          <div>
+            <label style={S.label}>Template (what fields each entry has)</label>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px' }}>
+              {listTemplates().map((t) => {
+                const on = newTemplate === t.id;
+                return (
+                  <button key={t.id} onClick={() => setNewTemplate(t.id)} type="button"
+                    style={{
+                      padding: '10px 12px',
+                      textAlign: 'left',
+                      background: on ? C.accentSoft : C.cardBg,
+                      border: on ? `1px solid ${C.accent}` : `1px solid ${C.border}`,
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      color: on ? C.accentText : C.textPrimary,
+                    }}>
+                    <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>{t.defaultIcon}</span>
+                      <span>{t.displayName}</span>
+                    </div>
+                    <div style={{ fontSize: '11.5px', color: C.textTertiary, marginTop: '3px', lineHeight: '1.35' }}>
+                      {t.description}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '14px', justifyContent: 'flex-end' }}>
+            <button onClick={() => { setAdding(false); setNewLabel(''); setNewIcon('📋'); setErr(''); }} type="button"
+              style={{ ...S.btn }}>
+              Cancel
+            </button>
+            <button onClick={handleAdd} type="button"
+              style={{ ...S.btnPrimary }}>
+              Add tab
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} type="button"
+          style={{
+            ...S.btn,
+            width: '100%',
+            padding: '14px',
+            fontSize: '14px',
+            fontWeight: 600,
+            border: `1px dashed ${C.borderStrong}`,
+            background: 'transparent',
+            color: C.textSecondary,
+          }}>
+          + Add a new tab
+        </button>
+      )}
+
+      <div style={{
+        marginTop: '16px', padding: '12px 14px',
+        fontSize: '12px', color: C.textTertiary,
+        background: C.softBg, borderRadius: '8px',
+        lineHeight: '1.55',
+      }}>
+        ℹ️ Built-in tabs (Notice, System, Games, Id & Pass) can be renamed and reordered, but not deleted. Custom tabs you add can be fully managed.
       </div>
     </div>
   );
@@ -4334,16 +4953,81 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
-  const tabs = [
+  // Default hardcoded tabs (used when flag is OFF or dynamic data not yet loaded)
+  const hardcodedTabs = useMemo(() => [
     { id: 'notice', label: 'Notice', icon: '📢' },
     { id: 'backend', label: 'System', icon: '⚙️' },
     { id: 'games', label: 'Games', icon: '🎮' },
     { id: 'idpass', label: 'Id & Pass', icon: '🔐' },
     ...(isAdmin ? [{ id: 'admins', label: 'Create Admin', icon: '👤' }] : []),
-  ];
-  // v25.10: Left-side navigation drawer state. Permanent on wide screens,
-  // slide-in on phones via the hamburger menu.
+  ], [isAdmin]);
+  // v25.20: Drawer tabs — dynamic when feature flag is ON, hardcoded otherwise.
+  // When dynamic: maps each legacy tab id ('notice'/'backend'/'games'/'idpass')
+  // to its matching tab_config row so renamed labels + icons appear here.
+  // Custom tabs created via Phase 4 don't appear here yet — routing rewrite
+  // for that is part of Phase 5/6.
+  //
+  // The 'useDynamicTabs' flag is read below — this useMemo runs after, so we
+  // declare drawerOpen first and then re-compute tabs after dynamicTabs is set.
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // v25.18: Phase 3 feature flag — toggle via localStorage
+  // Set: localStorage.setItem('infos:use_dynamic_tabs', '1'); location.reload()
+  // Unset: localStorage.removeItem('infos:use_dynamic_tabs'); location.reload()
+  const useDynamicTabs = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    try { return localStorage.getItem('infos:use_dynamic_tabs') === '1'; } catch { return false; }
+  }, []);
+
+  // Dynamic tabs/entries state — only fetched when flag is on
+  const [dynamicTabs, setDynamicTabs] = useState<TabConfig[]>([]);
+  const [dynamicEntriesByTab, setDynamicEntriesByTab] = useState<Record<string, DynamicEntry[]>>({});
+
+  // Load tabs + their entries when flag is on
+  useEffect(() => {
+    if (!useDynamicTabs) return;
+    let alive = true;
+    (async () => {
+      const tabs = await loadTabs(workspaceIdForUser(user));
+      if (!alive) return;
+      setDynamicTabs(tabs);
+      // Fetch entries for each tab in parallel
+      const results = await Promise.all(
+        tabs.map((t) => loadDynamicEntries(t.id).then((es) => [t.id, es] as const)),
+      );
+      if (!alive) return;
+      const map: Record<string, DynamicEntry[]> = {};
+      for (const [tabId, es] of results) map[tabId] = es;
+      setDynamicEntriesByTab(map);
+    })();
+    return () => { alive = false; };
+  }, [useDynamicTabs, user]);
+
+  // Reload entries for a single tab (after create/edit/delete)
+  const reloadDynamicTab = useCallback(async (tabId: string) => {
+    const entries = await loadDynamicEntries(tabId);
+    setDynamicEntriesByTab((prev) => ({ ...prev, [tabId]: entries }));
+  }, []);
+
+  // v25.20: Merge hardcoded + dynamic tab metadata for drawer rendering.
+  // When flag OFF or dynamic tabs not yet loaded: use hardcoded.
+  // When flag ON: legacy IDs are mapped to their tab_config row so renamed
+  // labels and updated icons appear in the drawer.
+  const tabs = useMemo(() => {
+    if (!useDynamicTabs || dynamicTabs.length === 0) return hardcodedTabs;
+    // Build a lookup: tab_config.id → tab_config row
+    const cfgById = new Map(dynamicTabs.map((t) => [t.id, t]));
+    // Same mapping used in tab dispatch (tplByTab from Portal)
+    const tplByTab: Record<string, string> = { notice: 'notice', backend: 'system', games: 'games', idpass: 'idpass' };
+    return hardcodedTabs.map((legacy) => {
+      if (legacy.id === 'admins') return legacy; // Admins tab isn't part of dynamic system
+      const wantId = `tab-${workspaceIdForUser(user)}-${tplByTab[legacy.id] || legacy.id}`;
+      const cfg = cfgById.get(wantId);
+      if (!cfg) return legacy;
+      // Use dynamic label/icon, keep legacy id for routing
+      return { id: legacy.id, label: cfg.label, icon: cfg.icon };
+    });
+  }, [useDynamicTabs, dynamicTabs, hardcodedTabs, user]);
 
   // v25.17: Add body class when drawer opens on mobile — prevents background
   // scroll while drawer is open (native sheet feel). CSS picks this up.
@@ -4588,7 +5272,9 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
               </div>
             </div>
             {/* v25.16: Current tab chip — visible only on mobile, shows which tab
-                the user is on. On desktop the drawer makes this redundant. */}
+                the user is on. On desktop the drawer makes this redundant.
+                v25.20: Reads from `tabs` array so it reflects renamed tabs when
+                dynamic flag is ON. */}
             <div className="infos-current-tab-chip" style={{
               display: 'none',
               alignItems: 'center', gap: '6px',
@@ -4601,12 +5287,17 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
               flexShrink: 0,
               border: `1px solid ${C.border}`,
             }}>
-              <span style={{ fontSize: '14px', lineHeight: 1 }}>
-                {tab === 'notice' ? '📢' : tab === 'backend' ? '⚙️' : tab === 'games' ? '🎮' : tab === 'idpass' ? '🔐' : tab === 'admins' ? '👤' : '📋'}
-              </span>
-              <span>
-                {tab === 'notice' ? 'Notice' : tab === 'backend' ? 'System' : tab === 'games' ? 'Games' : tab === 'idpass' ? 'Id & Pass' : tab === 'admins' ? 'Admins' : tab}
-              </span>
+              {(() => {
+                const currentTab = tabs.find((t) => t.id === tab);
+                const icon = currentTab?.icon || '📋';
+                const label = currentTab?.label || tab;
+                return (
+                  <>
+                    <span style={{ fontSize: '14px', lineHeight: 1 }}>{icon}</span>
+                    <span>{label}</span>
+                  </>
+                );
+              })()}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -4664,12 +5355,37 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
             <Skeleton height="44px" style={{ marginBottom: '14px' }} />
             <Skeleton lines={5} />
           </div>
-        ) :
+        ) : useDynamicTabs ? (
+          // v25.18: Phase 3 — generic renderer path. Maps the current tab id
+          // ('notice'/'backend'/'games'/'idpass') to its matching tab_config row.
+          (() => {
+            if (tab === 'admins' && isAdmin) {
+              return <CreateAdminPanel user={user} subs={subs} setSubs={setSubs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} reloadSubs={reloaders.sub_admins} />;
+            }
+            // Map legacy tab id → dynamic tab_config (by template + position)
+            const tplByTab: Record<string, string> = { notice: 'notice', backend: 'system', games: 'games', idpass: 'idpass' };
+            const wantId = `tab-${workspaceIdForUser(user)}-${tplByTab[tab] || tab}`;
+            const cfg = dynamicTabs.find((t) => t.id === wantId);
+            if (!cfg) {
+              return <EmptyState icon="⏳" title="Loading tabs…" hint="Dynamic tabs are being fetched." />;
+            }
+            return (
+              <GenericTabRenderer
+                tabConfig={cfg}
+                user={user}
+                subs={subs}
+                entries={dynamicEntriesByTab[cfg.id] || []}
+                reload={() => reloadDynamicTab(cfg.id)}
+              />
+            );
+          })()
+        ) : (
           tab === 'notice' ? <NoticeTab user={user} subs={subs} items={notices} setItems={setNotices} reload={reloaders.notices} pastes={pastes} setPastes={setPastes} reloadPastes={reloaders.paste_buffer} /> :
           tab === 'backend' ? <GameListTab table="backend_entries" user={user} subs={subs} entries={backend} setEntries={setBackend} reload={reloaders.backend_entries} emptyMsg="No system entries yet." /> :
           tab === 'games' ? <GameListTab table="game_entries" user={user} subs={subs} entries={games} setEntries={setGames} reload={reloaders.game_entries} emptyMsg="No games yet." /> :
           tab === 'idpass' ? <IdPassTab user={user} subs={subs} entries={idpass} setEntries={setIdpass} reload={reloaders.idpass_entries} /> :
-          tab === 'admins' && isAdmin ? <CreateAdminPanel user={user} subs={subs} setSubs={setSubs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} reloadSubs={reloaders.sub_admins} /> : null}
+          tab === 'admins' && isAdmin ? <CreateAdminPanel user={user} subs={subs} setSubs={setSubs} backend={backend} games={games} idpass={idpass} notices={notices} reload={reloadAll} reloadSubs={reloaders.sub_admins} /> : null
+        )}
       </div>
       </div>
       </div>
