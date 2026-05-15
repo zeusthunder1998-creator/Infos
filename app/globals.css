@@ -1,79 +1,85 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-/* Light theme (default) */
+/* Light theme (default) — v25.14: refined palette with cooler whites and softer purples */
 :root, :root[data-theme="light"] {
-  --bg: #faf9f7;
+  --bg: #f7f6f3;
   --card-bg: #ffffff;
-  --soft-bg: #f5f4f0;
-  --border: rgba(80, 90, 130, 0.18);
-  --border-strong: rgba(80, 90, 130, 0.35);
-  --text-primary: #1a1a1a;
-  --text-secondary: #5a5a5a;
-  --text-tertiary: #9a9a9a;
-  --accent: #7b64f5;
-  --accent-soft: rgba(123, 100, 245, 0.1);
-  --accent-text: #5a48c7;
-  --danger: #e24b4a;
-  --danger-soft: rgba(226, 75, 74, 0.1);
-  --success: #3b6d11;
-  --success-soft: rgba(99, 153, 34, 0.12);
+  --soft-bg: #f3f2ee;
+  --border: rgba(74, 84, 120, 0.14);
+  --border-strong: rgba(74, 84, 120, 0.28);
+  --text-primary: #16161a;
+  --text-secondary: #5d5d68;
+  --text-tertiary: #9d9da6;
+  --accent: #6e5af0;
+  --accent-soft: rgba(110, 90, 240, 0.09);
+  --accent-text: #4f3dcc;
+  --danger: #e0444a;
+  --danger-soft: rgba(224, 68, 74, 0.09);
+  --success: #2f7a2f;
+  --success-soft: rgba(99, 173, 67, 0.13);
   --warn-soft: rgba(250, 199, 117, 0.15);
   --warn-text: #854f0b;
   --warn-border: rgba(250, 199, 117, 0.3);
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.03);
-  --shadow-pop: 0 12px 32px rgba(0,0,0,0.15), 0 2px 6px rgba(0,0,0,0.08);
-  --modal-backdrop: rgba(30, 30, 40, 0.4);
+  --shadow-card: 0 1px 2px rgba(15, 18, 50, 0.04), 0 1px 1px rgba(15, 18, 50, 0.03);
+  --shadow-card-hover: 0 4px 12px rgba(15, 18, 50, 0.06), 0 2px 4px rgba(15, 18, 50, 0.04);
+  --shadow-pop: 0 10px 36px rgba(15, 18, 50, 0.12), 0 2px 8px rgba(15, 18, 50, 0.06);
+  --shadow-input-focus: 0 0 0 3px rgba(110, 90, 240, 0.18);
+  --modal-backdrop: rgba(28, 28, 42, 0.42);
 }
 
-/* Dark theme */
+/* Dark theme — v25.14: warmer surfaces, refined contrast */
 :root[data-theme="dark"] {
-  --bg: #141416;
-  --card-bg: #1d1d21;
-  --soft-bg: #26262b;
-  --border: rgba(180, 185, 210, 0.12);
-  --border-strong: rgba(180, 185, 210, 0.25);
-  --text-primary: #ececee;
-  --text-secondary: #a7a7ae;
-  --text-tertiary: #6e6e76;
-  --accent: #9d88ff;
-  --accent-soft: rgba(157, 136, 255, 0.18);
-  --accent-text: #b9a8ff;
-  --danger: #f06a69;
-  --danger-soft: rgba(240, 106, 105, 0.18);
-  --success: #8bc85a;
-  --success-soft: rgba(139, 200, 90, 0.15);
+  --bg: #0f1014;
+  --card-bg: #1a1b1f;
+  --soft-bg: #23252a;
+  --border: rgba(180, 190, 220, 0.10);
+  --border-strong: rgba(180, 190, 220, 0.22);
+  --text-primary: #edeef2;
+  --text-secondary: #a6a8b0;
+  --text-tertiary: #6d6f78;
+  --accent: #9c84ff;
+  --accent-soft: rgba(156, 132, 255, 0.16);
+  --accent-text: #c4b3ff;
+  --danger: #f0696b;
+  --danger-soft: rgba(240, 105, 107, 0.16);
+  --success: #92cf64;
+  --success-soft: rgba(146, 207, 100, 0.14);
   --warn-soft: rgba(250, 199, 117, 0.12);
   --warn-text: #f5c97c;
   --warn-border: rgba(250, 199, 117, 0.25);
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.3);
-  --shadow-pop: 0 12px 32px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.35);
-  --modal-backdrop: rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 1px 1px rgba(0,0,0,0.3);
+  --shadow-card-hover: 0 4px 14px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.4);
+  --shadow-pop: 0 12px 32px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-input-focus: 0 0 0 3px rgba(156, 132, 255, 0.22);
+  --modal-backdrop: rgba(0, 0, 0, 0.65);
 }
 
 /* Auto dark mode when no explicit preference */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --bg: #141416;
-    --card-bg: #1d1d21;
-    --soft-bg: #26262b;
-    --border: rgba(180, 185, 210, 0.12);
-    --border-strong: rgba(180, 185, 210, 0.25);
-    --text-primary: #ececee;
-    --text-secondary: #a7a7ae;
-    --text-tertiary: #6e6e76;
-    --accent: #9d88ff;
-    --accent-soft: rgba(157, 136, 255, 0.18);
-    --accent-text: #b9a8ff;
-    --danger: #f06a69;
-    --danger-soft: rgba(240, 106, 105, 0.18);
-    --success: #8bc85a;
-    --success-soft: rgba(139, 200, 90, 0.15);
+    --bg: #0f1014;
+    --card-bg: #1a1b1f;
+    --soft-bg: #23252a;
+    --border: rgba(180, 190, 220, 0.10);
+    --border-strong: rgba(180, 190, 220, 0.22);
+    --text-primary: #edeef2;
+    --text-secondary: #a6a8b0;
+    --text-tertiary: #6d6f78;
+    --accent: #9c84ff;
+    --accent-soft: rgba(156, 132, 255, 0.16);
+    --accent-text: #c4b3ff;
+    --danger: #f0696b;
+    --danger-soft: rgba(240, 105, 107, 0.16);
+    --success: #92cf64;
+    --success-soft: rgba(146, 207, 100, 0.14);
     --warn-soft: rgba(250, 199, 117, 0.12);
     --warn-text: #f5c97c;
     --warn-border: rgba(250, 199, 117, 0.25);
-    --shadow-card: 0 1px 3px rgba(0,0,0,0.3);
-    --shadow-pop: 0 12px 32px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.35);
-    --modal-backdrop: rgba(0, 0, 0, 0.6);
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 1px 1px rgba(0,0,0,0.3);
+    --shadow-card-hover: 0 4px 14px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.4);
+    --shadow-pop: 0 12px 32px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4);
+    --shadow-input-focus: 0 0 0 3px rgba(156, 132, 255, 0.22);
+    --modal-backdrop: rgba(0, 0, 0, 0.65);
   }
 }
 
@@ -103,14 +109,16 @@ input, textarea, button, select { font-family: inherit; }
 @keyframes infosItemEnter { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes infosShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.infos-input:hover { border-color: rgba(80, 90, 130, 0.5) !important; }
-.infos-input:focus { border-color: var(--accent) !important; outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+.infos-input { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.infos-input:hover:not(:focus) { border-color: var(--border-strong) !important; }
+.infos-input:focus { border-color: var(--accent) !important; outline: none; box-shadow: var(--shadow-input-focus); }
+.infos-input::placeholder { color: var(--text-tertiary); opacity: 0.65; }
 .infos-btn:hover { background: var(--soft-bg); }
 .infos-btn-primary:hover { filter: brightness(1.1); box-shadow: 0 4px 12px var(--accent-soft); }
 .infos-btn-primary:active { transform: translateY(1px); }
 .infos-tab:hover { color: var(--text-primary) !important; }
-.infos-item { transition: box-shadow 0.15s, transform 0.15s, border-color 0.15s; }
-.infos-item:hover { box-shadow: var(--shadow-card); }
+.infos-item { transition: box-shadow 0.18s ease, transform 0.18s ease, border-color 0.15s; }
+.infos-item:hover { box-shadow: var(--shadow-card-hover); transform: translateY(-1px); border-color: var(--border-strong); }
 .infos-pill:active { transform: scale(0.96); }
 .infos-dropdown { animation: infosSlideUp 0.18s ease-out; }
 .infos-modal-backdrop { animation: infosBackdropIn 0.15s ease-out; }
@@ -240,5 +248,170 @@ input, textarea, button, select { font-family: inherit; }
     top: 0 !important;
     height: 100dvh !important;
     transform: none !important;
+  }
+}
+
+/* ============================================================================
+   v25.15: Mobile typography & touch targets
+   ----------------------------------------------------------------------------
+   On phones, the existing 13-14px text and 9-10px buttons feel cramped. This
+   block scales everything up modestly on screens ≤600px so it feels more
+   "native app" sized without changing the desktop experience at all.
+   ========================================================================== */
+@media (max-width: 600px) {
+  /* Inputs: bigger text and 16px font-size (prevents iOS auto-zoom on focus) */
+  .infos-input {
+    font-size: 16px !important;
+    padding: 12px 14px !important;
+    border-radius: 10px !important;
+  }
+  /* Buttons get bigger touch targets — 44px min is Apple's HIG */
+  button {
+    min-height: 40px;
+  }
+  /* Hamburger / icon-only buttons stay square */
+  .infos-hamburger,
+  .infos-drawer-close,
+  .infos-pill {
+    min-height: 0;
+  }
+  /* List item titles need to be readable from arm's length */
+  .infos-item {
+    padding: 18px 16px 16px !important;
+  }
+  /* Brand title in header */
+  .infos-app-shell h1, .infos-app-shell [data-brand] {
+    font-size: 22px;
+  }
+}
+
+/* v25.16: Current tab chip — visible only on mobile (drawer hidden) */
+@media (max-width: 899px) {
+  .infos-current-tab-chip {
+    display: inline-flex !important;
+  }
+  /* On very narrow screens, hide the username sub-text to keep the header tidy */
+}
+@media (max-width: 480px) {
+  /* When the chip is showing, the username sub-text becomes redundant — drop it */
+  .infos-current-tab-chip + * {
+    /* Reserved for future tweaks */
+  }
+}
+
+/* v25.16: Search button hover state + responsive tag hiding */
+.infos-search-button:hover {
+  background: var(--card-bg) !important;
+  border-color: var(--border-strong) !important;
+}
+@media (max-width: 600px) {
+  .infos-search-tags { display: none !important; }
+}
+
+/* ============================================================================
+   v25.17: Less "webish" mobile feel
+   ----------------------------------------------------------------------------
+   Native apps feel different from websites in subtle ways: no blue tap
+   highlight, no overscroll bounce, no text selection on UI chrome, hidden
+   focus rings on touch input but visible for keyboard users, etc.
+   This block applies those polish layers ONLY where appropriate.
+   ========================================================================== */
+
+/* 1. Remove the default mobile-browser tap highlight (the blue flash on tap).
+   Apply globally but keep selection working for actual text content. */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 2. Smooth momentum scrolling on iOS for all scroll containers */
+html, body, .infos-drawer, .infos-bell-dropdown, .infos-user-dropdown {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* 3. Disable text selection on chrome elements (buttons, drawer, header)
+   but keep it on content (cards, descriptions, titles) where users may
+   want to copy values like usernames/passwords/links. */
+button,
+.infos-drawer nav,
+.infos-bell-dropdown > div:first-child,
+.infos-user-dropdown > div:first-child,
+.infos-current-tab-chip,
+.infos-pill,
+[role="tab"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 4. Use :focus-visible instead of :focus so focus rings only appear for
+   keyboard users, not touch. We're targeting the .infos-input class only
+   so default form behavior stays accessible. */
+@media (hover: none) and (pointer: coarse) {
+  /* Touch devices: rely on :focus-visible (already in modern browsers)
+     to hide focus rings on tap. The existing :focus rules still apply for
+     keyboard users via :focus-visible inheritance. */
+  .infos-input:focus:not(:focus-visible) {
+    box-shadow: none !important;
+  }
+  button:focus:not(:focus-visible) {
+    outline: none !important;
+  }
+}
+
+/* 5. Active-tap feedback on buttons — subtle scale, fast enough to feel
+   instantaneous like native. */
+@media (hover: none) {
+  button:active:not(:disabled) {
+    transform: scale(0.97);
+    transition: transform 0.06s ease;
+  }
+  .infos-item:active {
+    transform: scale(0.995);
+    transition: transform 0.06s ease;
+  }
+}
+
+/* 6. Disable iOS double-tap-to-zoom on UI chrome — keeps interactions snappy.
+   touch-action: manipulation lets the browser skip the 300ms wait. */
+button,
+.infos-drawer,
+.infos-current-tab-chip,
+.infos-search-button,
+a {
+  touch-action: manipulation;
+}
+
+/* 7. Safe-area padding for notched devices. Already partially handled in v25.3
+   for dropdowns; this adds to the app shell + drawer footer. */
+.infos-app-shell {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+.infos-drawer {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 8. Prevent body scroll when drawer is open on mobile (avoid background scroll
+   while the drawer is open — feels like a native modal sheet). */
+body.infos-drawer-open {
+  overflow: hidden;
+}
+
+/* 9. Mobile: hide the title attribute tooltip on touch (uses different gesture
+   than mouse hover, but browsers sometimes show it on long-press — annoying). */
+@media (hover: none) and (pointer: coarse) {
+  [title] {
+    /* No CSS fix for this — handled by removing title from touch-only buttons */
+  }
+}
+
+/* 10. Slightly snappier transitions on mobile — native apps feel faster than
+   web's default 200ms+ */
+@media (max-width: 600px) {
+  .infos-drawer,
+  .infos-bell-dropdown,
+  .infos-user-dropdown,
+  .infos-modal {
+    transition-duration: 0.18s !important;
   }
 }

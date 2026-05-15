@@ -1,6 +1,6 @@
 {
   "name": "infos",
-  "version": "25.13.0",
+  "version": "25.17.0",
   "private": true,
   "scripts": {
     "dev": "next dev",

@@ -486,7 +486,7 @@ function LoginForm({ onLogin, onCancel, cancelLabel, subtitle }: any) {
             Forgot password?
           </button>
         </div>
-        {error && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '12px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{error}</div>}
+        {error && <div style={{ ...S.formError, marginBottom: '12px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{error}</span></div>}
         <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
           {onCancel && <Btn onClick={onCancel} style={{ flex: 1 }}>{cancelLabel || 'Cancel'}</Btn>}
           <Btn primary onClick={handle} disabled={busy} style={{ flex: onCancel ? 1 : undefined, width: onCancel ? undefined : '100%', opacity: busy ? 0.7 : 1 }}>{busy ? 'Signing in…' : 'Sign in'}</Btn>
@@ -2298,7 +2298,7 @@ function EntryForm({ fields, subs, onSubmit, submitLabel = 'Add' }: any) {
         <label style={S.label}>Assign to sub-admin(s)</label>
         <AssigneePicker subs={subs} selected={v.assignees} onChange={(a: any) => setV({ ...v, assignees: a })} />
       </div>
-      {err && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+      {err && <div style={{ ...S.formError, marginTop: '10px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{err}</span></div>}
       <div style={{ marginTop: '14px', textAlign: 'right' }}>
         <Btn primary onClick={handle} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : submitLabel}</Btn>
       </div>
@@ -2352,7 +2352,7 @@ function IdPassEntryForm({ subs, onSubmit, section = 'games' }: any) {
         <label style={S.label}>Assign to sub-admin(s)</label>
         <AssigneePicker subs={subs} selected={v.assignees} onChange={(a: any) => setV({ ...v, assignees: a })} />
       </div>
-      {err && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+      {err && <div style={{ ...S.formError, marginTop: '10px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{err}</span></div>}
       <div style={{ marginTop: '14px', textAlign: 'right' }}>
         <Btn primary onClick={handle} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Add'}</Btn>
       </div>
@@ -2392,7 +2392,7 @@ function NoticeEntryForm({ subs, onSubmit }: any) {
         <label style={S.label}>Post to</label>
         <AssigneePicker subs={subs} selected={v.assignees} onChange={(a: any) => setV({ ...v, assignees: a })} />
       </div>
-      {err && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+      {err && <div style={{ ...S.formError, marginBottom: '10px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{err}</span></div>}
       <div style={{ textAlign: 'right' }}><Btn primary onClick={handle} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Posting…' : 'Post notice'}</Btn></div>
     </div>
   );
@@ -2930,7 +2930,7 @@ function CopyPasteSection({ user, pastes, setPastes, reload }: any) {
           <label style={S.label}>Password</label>
           <TextInput type="text" value={password} onChange={(e: any) => setPassword(e.target.value)} placeholder="Login password" onKeyDown={(e: any) => { if (e.key === 'Enter') submit(); }} />
         </div>
-        {err && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+        {err && <div style={{ ...S.formError, marginTop: '10px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{err}</span></div>}
         <div style={{ marginTop: '14px', textAlign: 'right' }}>
           <Btn primary onClick={submit} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Publishing…' : 'Publish (5 min)'}</Btn>
         </div>
@@ -3458,7 +3458,7 @@ function CreateAdminPanelInner({ user, subs, setSubs, backend, games, idpass, no
             Note: As a co-admin, you can only create sub-admins. Only Zeus can create other co-admins.
           </div>
         )}
-        {error && <div style={{ fontSize: '13px', color: C.danger, marginTop: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{error}</div>}
+        {error && <div style={{ ...S.formError, marginTop: '10px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{error}</span></div>}
         <div style={{ marginTop: '14px', textAlign: 'right' }}>
           <Btn primary onClick={add} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>
             {busy ? 'Saving…' : `Create ${canSelectRole && role === 'co' ? 'co-admin' : 'sub-admin'}`}
@@ -3847,7 +3847,7 @@ function SettingsModal({ open, onClose, user, onForceLogout, onOpenTrash, onOpen
             )}
             <div style={{ marginBottom: '12px' }}><label style={S.label}>New password</label><TextInput type="password" value={newPassword} onChange={(e: any) => setNewPassword(e.target.value)} /></div>
             <div style={{ marginBottom: '12px' }}><label style={S.label}>Confirm new password</label><TextInput type="password" value={confirmPass} onChange={(e: any) => setConfirmPass(e.target.value)} /></div>
-            {err && <div style={{ fontSize: '13px', color: C.danger, marginBottom: '10px', padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px', fontWeight: 500 }}>{err}</div>}
+            {err && <div style={{ ...S.formError, marginBottom: '10px' }}><span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span><span>{err}</span></div>}
             {msg && <div style={{ fontSize: '13px', color: C.success, marginBottom: '10px', padding: '8px 12px', background: C.successSoft, borderRadius: '6px', fontWeight: 500 }}>{msg}</div>}
             <div style={{ textAlign: 'right' }}>
               <Btn primary onClick={isZeusUser ? saveZeusCreds : saveCoPassword} disabled={busy} style={{ opacity: busy ? 0.7 : 1 }}>{busy ? 'Saving…' : 'Save changes'}</Btn>
@@ -4345,6 +4345,17 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
   // slide-in on phones via the hamburger menu.
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // v25.17: Add body class when drawer opens on mobile — prevents background
+  // scroll while drawer is open (native sheet feel). CSS picks this up.
+  useEffect(() => {
+    if (drawerOpen) {
+      document.body.classList.add('infos-drawer-open');
+    } else {
+      document.body.classList.remove('infos-drawer-open');
+    }
+    return () => { document.body.classList.remove('infos-drawer-open'); };
+  }, [drawerOpen]);
+
   return (
     <div className="infos-app-shell" style={{
       display: 'flex',
@@ -4570,11 +4581,32 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
               ☰
             </button>
             <Image src="/logo.png" alt="" width={38} height={38} style={{ flexShrink: 0 }} className="infos-header-logo" />
-            <div style={{ minWidth: 0 }}>
+            <div style={{ minWidth: 0, flex: 1 }}>
               <div style={S.brand}>Infos</div>
               <div style={S.sub}>
                 {user.username} — {user.role === 'zeus' ? 'main admin' : user.role === 'co' ? 'co-admin' : 'sub-admin'}
               </div>
+            </div>
+            {/* v25.16: Current tab chip — visible only on mobile, shows which tab
+                the user is on. On desktop the drawer makes this redundant. */}
+            <div className="infos-current-tab-chip" style={{
+              display: 'none',
+              alignItems: 'center', gap: '6px',
+              padding: '5px 10px',
+              background: C.accentSoft,
+              color: C.accentText,
+              borderRadius: '999px',
+              fontSize: '12px',
+              fontWeight: 600,
+              flexShrink: 0,
+              border: `1px solid ${C.border}`,
+            }}>
+              <span style={{ fontSize: '14px', lineHeight: 1 }}>
+                {tab === 'notice' ? '📢' : tab === 'backend' ? '⚙️' : tab === 'games' ? '🎮' : tab === 'idpass' ? '🔐' : tab === 'admins' ? '👤' : '📋'}
+              </span>
+              <span>
+                {tab === 'notice' ? 'Notice' : tab === 'backend' ? 'System' : tab === 'games' ? 'Games' : tab === 'idpass' ? 'Id & Pass' : tab === 'admins' ? 'Admins' : tab}
+              </span>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -4603,24 +4635,25 @@ function Portal({ user, accounts, activeKey, onSwitch, onAddAccount, onSignOut, 
         <button
           onClick={() => setSearchOpen(true)}
           type="button"
-          className="infos-btn"
+          className="infos-btn infos-search-button"
           style={{
             display: 'flex', alignItems: 'center', gap: '10px',
             width: '100%',
-            margin: '8px 0 12px',
-            padding: '11px 14px',
+            margin: '4px 0 16px',
+            padding: '12px 16px',
             background: C.softBg,
             border: `1px solid ${C.border}`,
-            borderRadius: '10px',
+            borderRadius: '12px',
             cursor: 'pointer',
             color: C.textTertiary,
-            fontSize: '13.5px',
+            fontSize: '14px',
             fontFamily: 'inherit',
             textAlign: 'left',
+            transition: 'background 0.15s ease, border-color 0.15s ease',
           }}>
           <span style={{ fontSize: '15px', flexShrink: 0 }}>🔍</span>
           <span style={{ flex: 1 }}>Search everything…</span>
-          <span style={{ fontSize: '11px', color: C.textTertiary, opacity: 0.7, flexShrink: 0 }}>Notices · System · Games · Id&amp;Pass</span>
+          <span className="infos-search-tags" style={{ fontSize: '11px', color: C.textTertiary, opacity: 0.7, flexShrink: 0 }}>Notices · System · Games · Id&amp;Pass</span>
         </button>
         {/* v25.10: Horizontal tab bar removed — left navigation drawer
             replaces it for both mobile and desktop. */}

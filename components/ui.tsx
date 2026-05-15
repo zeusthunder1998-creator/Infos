@@ -334,24 +334,49 @@ export function Skeleton({ width, height, lines, style }: { width?: string; heig
 export function EmptyState({ icon, title, hint }: { icon: string; title: string; hint?: string }) {
   return (
     <div style={{
-      padding: '48px 20px 40px',
+      // v25.15: Polished empty state. Adds a soft circular "halo" backdrop behind
+      // the icon to feel more illustrated and less generic-emoji.
+      padding: '56px 24px 48px',
       textAlign: 'center',
-      borderRadius: '12px',
+      borderRadius: '16px',
       background: 'var(--soft-bg)',
       border: '1px dashed var(--border)',
       animation: 'infosFadeIn 0.3s ease-out',
+      maxWidth: '460px',
+      margin: '0 auto',
     }}>
+      {/* Icon with circular gradient backdrop */}
       <div style={{
-        fontSize: '52px',
-        lineHeight: 1,
-        marginBottom: '16px',
-        filter: 'grayscale(0.2)',
-        opacity: 0.85,
+        width: '92px',
+        height: '92px',
+        margin: '0 auto 18px',
+        borderRadius: '50%',
+        background: 'radial-gradient(circle, var(--accent-soft) 0%, transparent 70%)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        position: 'relative',
       }}>
-        {icon}
+        {/* Inner halo */}
+        <div style={{
+          position: 'absolute',
+          inset: '18px',
+          borderRadius: '50%',
+          background: 'var(--card-bg)',
+          border: '1px solid var(--border)',
+          boxShadow: '0 4px 16px var(--accent-soft)',
+        }} />
+        <div style={{
+          fontSize: '36px',
+          lineHeight: 1,
+          position: 'relative',
+          zIndex: 1,
+        }}>
+          {icon}
+        </div>
       </div>
       <div style={{
-        fontSize: '15px',
+        fontSize: '16px',
         fontWeight: 600,
         color: 'var(--text-primary)',
         letterSpacing: '-0.01em',

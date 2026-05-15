@@ -188,12 +188,9 @@ export function DynamicForm({
         </div>
       )}
       {err && (
-        <div style={{
-          fontSize: '13px', color: C.danger, marginTop: '10px',
-          padding: '8px 12px', background: C.dangerSoft, borderRadius: '6px',
-          fontWeight: 500,
-        }}>
-          {err}
+        <div style={{ ...S.formError, marginTop: '10px' }}>
+          <span style={{ fontSize: '14px', lineHeight: 1, flexShrink: 0 }}>⚠️</span>
+          <span>{err}</span>
         </div>
       )}
       <div style={{ marginTop: '14px', textAlign: 'right' }}>

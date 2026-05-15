@@ -22,9 +22,10 @@ export const S: Record<string, any> = {
   // v25.7: Refined card chrome — slightly larger radius for a softer look.
   card: { background: C.cardBg, border: `1px solid ${C.border}`, borderRadius: '16px', padding: '1.5rem', boxShadow: 'var(--shadow-card)' },
   softCard: { background: C.softBg, border: `1px solid ${C.border}`, borderRadius: '12px', padding: '1.1rem 1.15rem' },
-  headerBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', paddingBottom: '1rem', borderBottom: `1px solid ${C.border}`, gap: '8px' },
-  brand: { fontSize: '20px', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.2 },
-  sub: { fontSize: '12.5px', color: C.textSecondary, marginTop: '2px' },
+  // v25.16: Lighter header — no heavy bottom border, more breathing room
+  headerBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', paddingBottom: '0.5rem', gap: '8px' },
+  brand: { fontSize: '21px', fontWeight: 700, letterSpacing: '-0.025em', lineHeight: 1.15 },
+  sub: { fontSize: '12px', color: C.textSecondary, marginTop: '3px', fontWeight: 500 },
   tabs: { display: 'flex', gap: '2px', borderBottom: `1px solid ${C.border}`, marginBottom: '1.25rem', flexWrap: 'wrap' as const },
   input: { width: '100%', padding: '11px 13px', fontSize: '14px', border: `1px solid ${C.borderStrong}`, borderRadius: '9px', background: C.cardBg, color: C.textPrimary, boxSizing: 'border-box' as const, transition: 'border-color 0.15s, box-shadow 0.15s', lineHeight: '1.4' },
   textarea: { width: '100%', padding: '11px 13px', fontSize: '14px', border: `1px solid ${C.borderStrong}`, borderRadius: '9px', background: C.cardBg, color: C.textPrimary, boxSizing: 'border-box' as const, minHeight: '76px', resize: 'vertical' as const, transition: 'border-color 0.15s, box-shadow 0.15s', lineHeight: '1.55' },
@@ -43,6 +44,21 @@ export const S: Record<string, any> = {
   allPill: { display: 'inline-block', padding: '3px 9px', fontSize: '11px', background: C.accent, color: 'white', borderRadius: '5px', marginRight: '5px', marginTop: '4px', fontWeight: 600, letterSpacing: '0.02em' },
   descBox: { marginTop: '10px', padding: '10px 13px', background: C.softBg, fontSize: '13px', color: C.textSecondary, borderLeft: `3px solid ${C.accent}`, borderRadius: '0 8px 8px 0', whiteSpace: 'pre-wrap' as const, lineHeight: '1.55' },
   dragHandle: { flexShrink: 0, width: '22px', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '2px', color: C.textTertiary, cursor: 'grab', fontSize: '14px', lineHeight: '1', userSelect: 'none' as const },
+  // v25.14: Polished inline form error. Used by EntryForm, LoginForm, NoticeForm,
+  // EntryEdit modal, IdPassForm. Soft red background, accent left border, icon row.
+  formError: {
+    fontSize: '13px',
+    color: C.danger,
+    padding: '10px 14px',
+    background: C.dangerSoft,
+    borderRadius: '9px',
+    fontWeight: 500,
+    borderLeft: `3px solid ${C.danger}`,
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: '8px',
+    lineHeight: '1.4',
+  },
 };
 
 export function tabStyle(active: boolean) {
